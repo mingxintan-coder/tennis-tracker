@@ -37,7 +37,7 @@
   /* stage */
   #stage{position:relative; background:#000; border-radius:3px; overflow:hidden; aspect-ratio:3/4}
   #stage.wide{aspect-ratio:16/9}
-  video,#draw{position:absolute; inset:0; width:100%; height:100%; object-fit:cover}
+  video,#draw{position:absolute; inset:0; width:100%; height:100%; object-fit:contain}
   video{background:#000}
   #draw{touch-action:none}
   #hint{position:absolute; left:0; right:0; bottom:0; padding:7px 9px; font-size:11.5px;
@@ -141,7 +141,11 @@
 
 <div class="panel tune" id="sessBar"><span id="sessTxt">Session 1 &middot; not started</span></div>
 
-<div class="row"><button id="btnCheck">Camera check</button></div>
+<div class="row">
+  <button id="btnAF" aria-pressed="true">Auto-focus on player</button>
+  <button id="btnCheck">Camera check</button>
+</div>
+<div class="panel tune"><span id="focusNote">auto-focus idle — start the camera</span></div>
 <pre class="panel diag" id="diag" hidden></pre>
 
 <div class="cards">
@@ -214,7 +218,7 @@ var S={
   vxSign:0, frames:0, tPrev:0, fps:0,
   session:1, history:[],
   recOn:true, mr:null, chunks:[], recT0:0, clips:[], recCanvas:false,
-  fig:null
+  fig:null, afOn:true, canPOI:false, caps:{}
 };
 
 /* ---------- processing buffers ---------- */
@@ -456,6 +460,7 @@ function step(tSec){
     S.player = S.player ? {x:S.player.x*0.7+px*0.3, y:S.player.y*0.7+py*0.3, n:pl.n}
                         : {x:px,y:py,n:pl.n};
     smoothFigure(figureFrom(pl));
+    autofocusTick(tSec);
   }
 
   if(b){
@@ -482,8 +487,15 @@ function step(tSec){
 }
 
 /* ---------- overlay ---------- */
+function fitRect(W,H){
+  var vw=vid.videoWidth||PW, vh=vid.videoHeight||PH;
+  var sc=Math.min(W/vw, H/vh), w=vw*sc, h=vh*sc;
+  return {x:(W-w)/2, y:(H-h)/2, w:w, h:h};
+}
+
 function drawScene(g,W,H){
-  var sx=W/PW, sy=H/PH, k=Math.max(.7, W/380);
+  var r=fitRect(W,H), sx=r.w/PW, sy=r.h/PH, k=Math.max(.7, r.w/380);
+  g.save(); g.translate(r.x, r.y);
 
   // wall zone
   var z=zoneRect();
@@ -550,6 +562,7 @@ function drawScene(g,W,H){
     g.textAlign='center'; g.textBaseline='middle';
     g.fillText(String(last.n), lx, ly+.5);
   }
+  g.restore();
 }
 
 function overlay(){
@@ -559,9 +572,12 @@ function overlay(){
   dctx.clearRect(0,0,W,H);
   drawScene(dctx,W,H);
   if(S.setZone){
+    var fr=fitRect(W,H);
     dctx.fillStyle='rgba(58,92,255,.9)';
     for(var k=0;k<S.zonePts.length;k++){
-      dctx.beginPath(); dctx.arc(S.zonePts[k].x*W,S.zonePts[k].y*H,7,0,6.2832); dctx.fill();
+      dctx.beginPath();
+      dctx.arc(fr.x+S.zonePts[k].x*fr.w, fr.y+S.zonePts[k].y*fr.h, 7, 0, 6.2832);
+      dctx.fill();
     }
   }
 }
@@ -750,6 +766,11 @@ function camCheck(){
       lines.push('opened: '+(st.width||'?')+'x'+(st.height||'?')+
                  ' @ '+(st.frameRate?Math.round(st.frameRate):'?')+' fps');
       s.getTracks().forEach(function(x){x.stop();});
+      var caps={};
+      try{ caps=(t&&t.getCapabilities)?(t.getCapabilities()||{}):{}; }catch(e){}
+      lines.push('focusMode: '+(caps.focusMode? caps.focusMode.join(', ') : 'not exposed'));
+      lines.push('focus point (pointsOfInterest): '+(caps.pointsOfInterest? 'steerable' : 'not exposed'));
+      lines.push('zoom: '+(caps.zoom? caps.zoom.min+'\u2013'+caps.zoom.max : 'not exposed'));
       lines.push('verdict: camera works here. Press Start tracking.');
       flush();
     }, function(e){
@@ -786,6 +807,7 @@ function startLive(){
     return vid.play();
   }).then(function(){
     sizeProc(vid.videoWidth,vid.videoHeight);
+    initFocus();
     hint.textContent='Prop the phone so both you and the wall stay in frame, then rally.';
   }).catch(function(err){
     var n=(err&&err.name)||'Error', m={
@@ -802,6 +824,54 @@ function startLive(){
 function stopLive(){
   if(S.stream){ S.stream.getTracks().forEach(function(t){t.stop();}); S.stream=null; }
   vid.srcObject=null;
+}
+
+/* ---------- camera focus ---------- */
+function camTrack(){
+  if(!S.stream) return null;
+  var t=S.stream.getVideoTracks();
+  return t && t.length ? t[0] : null;
+}
+function focusNote(txt){
+  var el=document.getElementById('focusNote');
+  if(el) el.textContent=txt;
+}
+function initFocus(){
+  var t=camTrack();
+  S.canPOI=false; S.caps={};
+  if(!t||!t.getCapabilities||!t.applyConstraints){
+    focusNote('camera controls not exposed by this browser'); return;
+  }
+  try{ S.caps=t.getCapabilities()||{}; }catch(e){ S.caps={}; }
+  var adv=[];
+  if(S.caps.focusMode && S.caps.focusMode.indexOf('continuous')>=0) adv.push({focusMode:'continuous'});
+  if(S.caps.exposureMode && S.caps.exposureMode.indexOf('continuous')>=0) adv.push({exposureMode:'continuous'});
+  if(adv.length){ try{ t.applyConstraints({advanced:adv}); }catch(e){} }
+  S.canPOI = !!S.caps.pointsOfInterest;
+  focusNote(S.canPOI
+    ? (S.afOn? 'auto-focus follows the player' : 'auto-focus off \u2014 tap the video to focus')
+    : (adv.length? 'continuous autofocus on (focus point not steerable)'
+                 : 'this browser exposes no focus control \u2014 iOS autofocuses on its own'));
+}
+var lastFocusT=-9, lastFx=-1, lastFy=-1;
+function focusAt(nx,ny){
+  var t=camTrack();
+  if(!t||!t.applyConstraints||!S.canPOI) return false;
+  nx=Math.min(1,Math.max(0,nx)); ny=Math.min(1,Math.max(0,ny));
+  try{
+    t.applyConstraints({advanced:[{pointsOfInterest:[{x:nx,y:ny}]}]});
+  }catch(e){ return false; }
+  return true;
+}
+function autofocusTick(tSec){
+  if(!S.afOn||!S.canPOI||!S.player) return;
+  if(tSec-lastFocusT<1.2) return;
+  // aim at the chest, not the feet: that is where the body mass and the racket are
+  var nx=S.player.x/PW;
+  var ny=(S.fig && S.fig.neck ? (S.fig.neck.y+S.fig.hip.y)/2 : S.player.y)/PH;
+  if(Math.abs(nx-lastFx)<0.04 && Math.abs(ny-lastFy)<0.04) return;
+  lastFocusT=tSec; lastFx=nx; lastFy=ny;
+  focusAt(nx,ny);
 }
 
 /* ---------- recording ---------- */
@@ -1045,6 +1115,15 @@ document.getElementById('fileIn').addEventListener('change', function(e){
   });
 });
 
+var btnAF=document.getElementById('btnAF');
+btnAF.addEventListener('click', function(){
+  S.afOn=!S.afOn;
+  btnAF.setAttribute('aria-pressed', S.afOn?'true':'false');
+  if(!S.stream){ focusNote(S.afOn?'auto-focus idle \u2014 start the camera':'auto-focus off'); return; }
+  if(S.afOn){ lastFx=-1; lastFy=-1; initFocus(); }
+  else focusNote(S.canPOI? 'auto-focus off \u2014 tap the video to focus' : 'auto-focus off');
+});
+
 document.getElementById('btnCheck').addEventListener('click', camCheck);
 
 var btnRec=document.getElementById('btnRecToggle');
@@ -1086,9 +1165,24 @@ document.getElementById('btnZone').addEventListener('click', function(){
   overlay();
 });
 draw.addEventListener('pointerdown', function(e){
-  if(!S.setZone) return;
   var r=draw.getBoundingClientRect();
-  S.zonePts.push({x:(e.clientX-r.left)/r.width, y:(e.clientY-r.top)/r.height});
+  var fr=fitRect(r.width, r.height);
+  var fx=((e.clientX-r.left)-fr.x)/fr.w, fy=((e.clientY-r.top)-fr.y)/fr.h;
+  fx=Math.min(1,Math.max(0,fx)); fy=Math.min(1,Math.max(0,fy));
+
+  if(!S.setZone){
+    // tap to focus wherever you point, and stop the tracker fighting you for it
+    if(S.stream && S.canPOI){
+      S.afOn=false; btnAF.setAttribute('aria-pressed','false');
+      focusAt(fx,fy);
+      focusNote('focused where you tapped \u2014 press Auto-focus on player to resume');
+    } else if(S.stream){
+      focusNote('this browser will not let the page choose a focus point');
+    }
+    return;
+  }
+
+  S.zonePts.push({x:fx, y:fy});
   if(S.zonePts.length===2){
     var a=S.zonePts[0], b=S.zonePts[1];
     S.zone={x:Math.min(a.x,b.x), y:Math.min(a.y,b.y),
