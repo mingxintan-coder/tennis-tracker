@@ -55,7 +55,8 @@
   button:focus-visible, label.file:focus-within{outline:2px solid var(--label); outline-offset:1px}
   button[aria-pressed="true"]{background:var(--ink); color:var(--panel); border-color:var(--ink)}
   button.go{background:var(--label); border-color:var(--label); color:#fff; font-weight:700}
-  button.go[data-on="1"]{background:var(--warn); border-color:var(--warn)}
+  button.halt{background:var(--warn); border-color:var(--warn); color:#fff; font-weight:700}
+  button:disabled{opacity:.4; cursor:default}
   input[type=file]{position:absolute; width:1px; height:1px; opacity:0}
   .seg{display:flex; border:1px solid var(--line); border-radius:3px; overflow:hidden}
   .seg button{border:0; border-radius:0; border-right:1px solid var(--line)}
@@ -98,11 +99,12 @@
   <video id="vid" playsinline muted></video>
   <canvas id="draw"></canvas>
   <div id="fps">idle</div>
-  <div id="hint">Choose Live camera or a recorded clip, then press Track.</div>
+  <div id="hint">Choose Live camera or a recorded clip, then press Start tracking.</div>
 </div>
 
 <div class="row">
-  <button class="go" id="btnRun">Track</button>
+  <button class="go" id="btnStart">Start tracking</button>
+  <button class="halt" id="btnStop">Stop tracking</button>
   <div class="seg" role="group" aria-label="Source">
     <button id="btnLive" aria-pressed="true">Live camera</button>
     <label class="file" tabindex="0">Open clip<input type="file" id="fileIn" accept="video/*"></label>
@@ -625,7 +627,7 @@ function camCheck(){
       lines.push('opened: '+(st.width||'?')+'x'+(st.height||'?')+
                  ' @ '+(st.frameRate?Math.round(st.frameRate):'?')+' fps');
       s.getTracks().forEach(function(x){x.stop();});
-      lines.push('verdict: camera works here. Press Track.');
+      lines.push('verdict: camera works here. Press Start tracking.');
       flush();
     }, function(e){
       lines.push('getUserMedia failed: '+((e&&e.name)||'Error'));
@@ -680,40 +682,53 @@ function stopLive(){
 }
 
 /* ---------- controls ---------- */
-var btnRun=document.getElementById('btnRun');
-btnRun.addEventListener('click', function(){
-  if(S.running){
-    S.running=false; stopLoops(); vid.pause();
-    btnRun.textContent='Track'; btnRun.removeAttribute('data-on');
-    fpsEl.textContent='paused';
-    return;
-  }
+var btnStart=document.getElementById('btnStart'), btnStop=document.getElementById('btnStop');
+function setRunUI(on){ btnStart.disabled=on; btnStop.disabled=!on; }
+
+function stopTracking(){
+  S.running=false; stopLoops();
+  try{ vid.pause(); }catch(e){}
+  S.pending=null; S.trail=[]; S.vxSign=0;
+  setRunUI(false);
+  fpsEl.textContent='stopped';
+  hint.textContent='Stopped. Totals are kept \u2014 press Start tracking to add more, or Reset session to clear.';
+  overlay();
+}
+
+function startTracking(){
+  if(S.running) return;
+  btnStart.disabled=true;
   var ready = (S.src==='live')
     ? (S.stream? Promise.resolve() : startLive())
     : (vid.src? vid.play() : Promise.reject(new Error('nofile')));
   ready.then(function(){
-    S.running=true; S.tPrev=0; S.frames=0;
-    btnRun.textContent='Stop'; btnRun.setAttribute('data-on','1');
+    S.running=true; S.tPrev=0; S.frames=0; S.vxSign=0;
+    setRunUI(true);
     if(S.src==='file') loopVFC(); else loopRAF();
   }).catch(function(e){
-    if(e&&e.message==='nofile') hint.textContent='Open a clip first, then press Track.';
+    setRunUI(false);
+    if(e&&e.message==='nofile') hint.textContent='Open a clip first, then press Start tracking.';
   });
-});
+}
+
+btnStart.addEventListener('click', startTracking);
+btnStop.addEventListener('click', stopTracking);
+setRunUI(false);
 
 document.getElementById('btnLive').addEventListener('click', function(){
   S.src='live'; this.setAttribute('aria-pressed','true');
-  vid.pause(); vid.removeAttribute('src'); vid.load();
-  hint.textContent='Press Track to start the camera.';
+  stopTracking(); vid.removeAttribute('src'); vid.load();
+  hint.textContent='Press Start tracking to open the camera.';
 });
 document.getElementById('fileIn').addEventListener('change', function(e){
   var f=e.target.files&&e.target.files[0]; if(!f) return;
   S.src='file'; document.getElementById('btnLive').setAttribute('aria-pressed','false');
-  stopLive();
+  stopTracking(); stopLive();
   vid.srcObject=null; vid.src=URL.createObjectURL(f); vid.loop=false;
   vid.addEventListener('loadedmetadata', function once(){
     vid.removeEventListener('loadedmetadata',once);
     sizeProc(vid.videoWidth,vid.videoHeight);
-    hint.textContent=f.name+' loaded — press Track.';
+    hint.textContent=f.name+' loaded — press Start tracking.';
     overlay();
   });
 });
