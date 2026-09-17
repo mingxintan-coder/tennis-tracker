@@ -122,6 +122,7 @@
 </div>
 
 <div class="row">
+  <button id="btnAutoWall" aria-pressed="true">Auto-detect wall</button>
   <button id="btnZone">Set wall zone</button>
   <div class="seg" role="group" aria-label="Wall side">
     <button id="wallL" aria-pressed="true">Wall left</button>
@@ -146,6 +147,7 @@
   <button id="btnCheck">Camera check</button>
 </div>
 <div class="panel tune"><span id="focusNote">auto-focus idle — start the camera</span></div>
+<div class="panel tune"><span id="frameNote">· wall   · player   · ball</span></div>
 <pre class="panel diag" id="diag" hidden></pre>
 
 <div class="cards">
@@ -218,7 +220,9 @@ var S={
   vxSign:0, frames:0, tPrev:0, fps:0,
   session:1, history:[],
   recOn:true, mr:null, chunks:[], recT0:0, clips:[], recCanvas:false,
-  fig:null, afOn:true, canPOI:false, caps:{}
+  fig:null, afOn:true, canPOI:false, caps:{},
+  autoWall:true, zoneLocked:false, wallHits:[], pbox:null,
+  zoomCaps:null, zoomCur:0, lastZoomT:-9, fstat:{}
 };
 
 /* ---------- processing buffers ---------- */
@@ -362,25 +366,78 @@ function classify(px, plx){
 
 function onReversal(ev){
   if(ev.t-S.lastEventT<0.18) return;
-  S.lastEventT=ev.t;
-  var z=zoneRect();
-  var nearWall = S.wallSide==='left' ? ev.x < Math.max(z.x+z.w*0.5, PW*0.34)
-                                     : ev.x > Math.min(z.x+z.w*0.5, PW*0.66);
   var plx = S.player? S.player.x : null;
-  var nearPlayer = plx!=null && Math.abs(ev.x-plx)<PW*0.30;
-
-  if(towardWall(ev.vx) && (nearPlayer || !nearWall)){
-    // ball just left the strings
-    commitPending();
-    S.pending={t:ev.t, peak:0, type:classify(ev.x, plx), x:ev.x, y:ev.y, place:null};
-  } else if(nearWall){
-    // ball just came off the wall — that contact point is the placement
-    var nx=(ev.x-z.x)/z.w, ny=(ev.y-z.y)/z.h;
-    nx=Math.min(1,Math.max(0,nx)); ny=Math.min(1,Math.max(0,ny));
-    if(S.pending && !S.pending.place) S.pending.place={x:nx,y:ny};
-    else if(S.strokes.length && !S.strokes[S.strokes.length-1].place)
-      S.strokes[S.strokes.length-1].place={x:nx,y:ny};
+  var isStroke;
+  if(plx!=null){
+    var away=(ev.x-plx)*ev.vx > 0;              // leaving the body
+    isStroke = Math.abs(ev.x-plx) < PW*0.30 && away;
+  } else {
+    isStroke = towardWall(ev.vx);
   }
+  S.lastEventT=ev.t;
+
+  if(isStroke){
+    commitPending();
+    S.pending={t:ev.t, peak:0, type:classify(ev.x, plx), x:ev.x, y:ev.y, hit:null};
+  } else {
+    registerWallHit(ev);
+  }
+}
+
+/* ---------- the wall teaches itself from where the ball comes back ---------- */
+function registerWallHit(ev){
+  S.wallHits.push({x:ev.x, y:ev.y, t:ev.t});
+  if(S.wallHits.length>40) S.wallHits.shift();
+  if(S.pending && !S.pending.hit) S.pending.hit={x:ev.x, y:ev.y};
+  else if(S.strokes.length && !S.strokes[S.strokes.length-1].hit)
+    S.strokes[S.strokes.length-1].hit={x:ev.x, y:ev.y};
+  learnWall();
+}
+
+function learnWall(){
+  var h=S.wallHits;
+  if(h.length<3) return;
+
+  // which side is the wall on? the bounces are the answer
+  var mx=0;
+  for(var i=0;i<h.length;i++) mx+=h[i].x;
+  mx/=h.length;
+  if(S.player){
+    var side = mx < S.player.x ? 'left' : 'right';
+    if(side!==S.wallSide && h.length>=4){
+      S.wallSide=side;
+      document.getElementById('wallL').setAttribute('aria-pressed', side==='left'?'true':'false');
+      document.getElementById('wallR').setAttribute('aria-pressed', side==='left'?'false':'true');
+      saveCfg();
+    }
+  }
+  if(!S.autoWall||S.zoneLocked) return;
+
+  var x0=1e9,x1=-1e9,y0=1e9,y1=-1e9;
+  for(var j=0;j<h.length;j++){
+    if(h[j].x<x0)x0=h[j].x; if(h[j].x>x1)x1=h[j].x;
+    if(h[j].y<y0)y0=h[j].y; if(h[j].y>y1)y1=h[j].y;
+  }
+  var padX=Math.max(PW*0.07,(x1-x0)*0.4), padY=Math.max(PH*0.07,(y1-y0)*0.4);
+  var nz={
+    x:Math.max(0,(x0-padX))/PW,
+    y:Math.max(0,(y0-padY))/PH,
+    w:Math.min(PW,(x1+padX))/PW,
+    h:Math.min(PH,(y1+padY))/PH
+  };
+  nz.w=Math.max(0.12, nz.w-nz.x); nz.h=Math.max(0.12, nz.h-nz.y);
+  var k=0.35;                                   // ease toward the new estimate
+  S.zone={ x:S.zone.x+(nz.x-S.zone.x)*k, y:S.zone.y+(nz.y-S.zone.y)*k,
+           w:S.zone.w+(nz.w-S.zone.w)*k, h:S.zone.h+(nz.h-S.zone.h)*k };
+  document.getElementById('gridNote').textContent='wall auto-detected ('+h.length+' bounces)';
+}
+
+/* placement is derived at draw time, so a refined wall zone re-maps old shots */
+function placeOf(st){
+  if(!st.hit) return null;
+  var z=zoneRect();
+  var nx=(st.hit.x-z.x)/z.w, ny=(st.hit.y-z.y)/z.h;
+  return {x:Math.min(1,Math.max(0,nx)), y:Math.min(1,Math.max(0,ny))};
 }
 
 function commitPending(){
@@ -388,7 +445,7 @@ function commitPending(){
   if(!p) return;
   var v=kmh(p.peak);
   if(!v || v<8 || v>260) return;              // discard nonsense
-  S.strokes.push({n:S.strokes.length+1, v:Math.round(v), type:p.type, place:p.place});
+  S.strokes.push({n:S.strokes.length+1, v:Math.round(v), type:p.type, hit:p.hit});
   render();
 }
 
@@ -460,8 +517,13 @@ function step(tSec){
     S.player = S.player ? {x:S.player.x*0.7+px*0.3, y:S.player.y*0.7+py*0.3, n:pl.n}
                         : {x:px,y:py,n:pl.n};
     smoothFigure(figureFrom(pl));
+    var nb={x0:pl.x0,y0:pl.y0,x1:pl.x1,y1:pl.y1};
+    S.pbox = S.pbox ? {x0:S.pbox.x0+(nb.x0-S.pbox.x0)*.35, y0:S.pbox.y0+(nb.y0-S.pbox.y0)*.35,
+                       x1:S.pbox.x1+(nb.x1-S.pbox.x1)*.35, y1:S.pbox.y1+(nb.y1-S.pbox.y1)*.35}
+                    : nb;
     autofocusTick(tSec);
   }
+  framing(tSec);
 
   if(b){
     updateScale(b);
@@ -499,10 +561,28 @@ function drawScene(g,W,H){
 
   // wall zone
   var z=zoneRect();
-  g.strokeStyle='rgba(255,255,255,.75)'; g.lineWidth=1.5*k;
+  var learned=S.wallHits.length>=3;
+  g.strokeStyle = learned? 'rgba(120,200,255,.9)' : 'rgba(255,255,255,.6)';
+  g.lineWidth=1.5*k;
   g.setLineDash([5*k,4*k]);
   g.strokeRect(z.x*sx, z.y*sy, z.w*sx, z.h*sy);
   g.setLineDash([]);
+  if(learned){
+    g.fillStyle='rgba(120,200,255,.95)';
+    g.font='bold '+(9.5*k)+'px '+getComputedStyle(document.body).fontFamily;
+    g.textAlign='left'; g.textBaseline='bottom';
+    g.fillText('WALL', z.x*sx+3*k, z.y*sy-3*k);
+  }
+
+  // player tracking box
+  var pb=S.pbox;
+  if(pb){
+    var inFrame = S.fstat && S.fstat.playerIn!==false;
+    g.strokeStyle = inFrame? 'rgba(255,255,255,.55)' : 'rgba(255,120,60,.95)';
+    g.lineWidth=1.4*k; g.setLineDash([3*k,3*k]);
+    g.strokeRect(pb.x0*sx, pb.y0*sy, (pb.x1-pb.x0)*sx, (pb.y1-pb.y0)*sy);
+    g.setLineDash([]);
+  }
 
   // body figure — drawn dark-then-light so it reads on any background
   var f=S.fig;
@@ -554,8 +634,9 @@ function drawScene(g,W,H){
 
   // last wall contact
   var last=S.strokes[S.strokes.length-1];
-  if(last&&last.place){
-    var lx=(z.x+last.place.x*z.w)*sx, ly=(z.y+last.place.y*z.h)*sy;
+  var lp=last? placeOf(last):null;
+  if(lp){
+    var lx=(z.x+lp.x*z.w)*sx, ly=(z.y+lp.y*z.h)*sy;
     g.fillStyle='rgba(28,138,74,.9)';
     g.beginPath(); g.arc(lx,ly,9*k,0,6.2832); g.fill();
     g.fillStyle='#fff'; g.font='bold '+(11*k)+'px '+getComputedStyle(document.body).fontFamily;
@@ -666,7 +747,11 @@ function drawGrid(st){
     gctx.beginPath(); gctx.moveTo(W*i/3,0); gctx.lineTo(W*i/3,H); gctx.stroke();
     gctx.beginPath(); gctx.moveTo(0,H*i/3); gctx.lineTo(W,H*i/3); gctx.stroke();
   }
-  var placed=st.filter(function(s){return s.place;});
+  var placed=[];
+  for(var q=0;q<st.length;q++){
+    var pp=placeOf(st[q]);
+    if(pp) placed.push({n:st[q].n, place:pp});
+  }
   if(!placed.length){
     gctx.fillStyle=muted; gctx.font='11px '+cs.fontFamily; gctx.textAlign='center';
     gctx.fillText('no wall contacts yet',W/2,H/2+4);
@@ -688,7 +773,8 @@ function drawLog(st){
   var tb=document.getElementById('logBody');
   if(!st.length){ tb.innerHTML='<tr><td colspan="4">No strokes yet.</td></tr>'; return; }
   var rows=st.slice(-8).reverse().map(function(s){
-    var p=s.place? (Math.round(s.place.x*100)+'% / '+Math.round(s.place.y*100)+'%') : '—';
+    var pl=placeOf(s);
+    var p=pl? (Math.round(pl.x*100)+'% / '+Math.round(pl.y*100)+'%') : '—';
     var t=s.type==='F'?'forehand':(s.type==='B'?'backhand':'unclear');
     return '<tr><td>'+s.n+'</td><td>'+t+'</td><td>'+s.v+'</td><td>'+p+'</td></tr>';
   });
@@ -826,6 +912,45 @@ function stopLive(){
   vid.srcObject=null;
 }
 
+/* ---------- keeping wall, player and ball inside the frame ---------- */
+function framing(tSec){
+  var m=Math.max(3, PW*0.035), st={};
+  var z=zoneRect();
+  st.wall = S.wallHits.length>=3;
+  st.wallIn = st.wall && z.x>-1 && z.y>-1 && (z.x+z.w)<PW+1 && (z.y+z.h)<PH+1 &&
+              z.x>m*0.3 && (z.x+z.w)<PW-m*0.3;
+  var b=S.pbox;
+  st.player = !!b;
+  st.playerIn = !!b && b.x0>m && b.x1<PW-m && b.y0>-1 && b.y1<PH-1;
+  st.ball = S.trail.length>0 && (tSec-S.trail[S.trail.length-1].t)<3;
+  var bx=S.ball;
+  st.ballIn = !bx || (bx.cx>m && bx.cx<PW-m && bx.cy>m*0.5 && bx.cy<PH-m*0.5);
+  S.fstat=st;
+
+  var msg=[];
+  msg.push((st.wall? (st.wallIn?'\u2713':'!')+' wall' : '\u00b7 wall (learning)'));
+  msg.push((st.player? (st.playerIn?'\u2713':'!')+' player' : '\u00b7 player'));
+  msg.push((st.ball? (st.ballIn?'\u2713':'!')+' ball' : '\u00b7 ball'));
+  var el=document.getElementById('frameNote');
+  if(el){
+    var bad = (st.player&&!st.playerIn) || (st.wall&&!st.wallIn);
+    el.textContent = msg.join('   ') + (bad? '   \u2014 something is at the frame edge' : '');
+    el.style.color = bad? 'var(--warn)' : 'var(--muted)';
+  }
+  if((st.player&&!st.playerIn) || (st.wall&&!st.wallIn)) zoomOut(tSec);
+}
+
+function zoomOut(tSec){
+  var t=camTrack();
+  if(!t||!t.applyConstraints||!S.zoomCaps) return;
+  if(tSec-S.lastZoomT<1.5) return;
+  var min=S.zoomCaps.min, cur=S.zoomCur||S.zoomCaps.max||1;
+  if(cur<=min*1.02) return;
+  var next=Math.max(min, cur*0.88);
+  S.lastZoomT=tSec; S.zoomCur=next;
+  try{ t.applyConstraints({advanced:[{zoom:next}]}); }catch(e){}
+}
+
 /* ---------- camera focus ---------- */
 function camTrack(){
   if(!S.stream) return null;
@@ -848,6 +973,10 @@ function initFocus(){
   if(S.caps.exposureMode && S.caps.exposureMode.indexOf('continuous')>=0) adv.push({exposureMode:'continuous'});
   if(adv.length){ try{ t.applyConstraints({advanced:adv}); }catch(e){} }
   S.canPOI = !!S.caps.pointsOfInterest;
+  if(S.caps.zoom && typeof S.caps.zoom.min==='number'){
+    S.zoomCaps=S.caps.zoom; S.zoomCur=S.caps.zoom.min;
+    try{ t.applyConstraints({advanced:[{zoom:S.caps.zoom.min}]}); }catch(e){}
+  } else { S.zoomCaps=null; }
   focusNote(S.canPOI
     ? (S.afOn? 'auto-focus follows the player' : 'auto-focus off \u2014 tap the video to focus')
     : (adv.length? 'continuous autofocus on (focus point not steerable)'
@@ -1036,6 +1165,7 @@ function archiveSession(){
 
 function clearSession(){
   S.strokes=[]; S.pending=null; S.trail=[]; S.player=null; S.fig=null;
+  S.wallHits=[]; S.pbox=null; S.fstat={};
   S.pxPerM=0; S.vxSign=0; S.lastEventT=-9; S.fps=0; S.frames=0; S.tPrev=0;
 }
 
@@ -1148,6 +1278,7 @@ function pair(aId,bId,setter){
 }
 pair('wallL','wallR',function(k){
   S.wallSide = k==='a'?'left':'right';
+  S.wallHits=[];                             // user has spoken; relearn from scratch
   S.zone = S.wallSide==='left' ? {x:.03,y:.14,w:.44,h:.62} : {x:.53,y:.14,w:.44,h:.62};
   saveCfg(); overlay();
 });
@@ -1159,7 +1290,25 @@ trim.addEventListener('input',function(){
   S.trim=+trim.value/100; trimOut.textContent=S.trim.toFixed(2)+'\u00d7'; saveCfg();
 });
 
+var btnAW=document.getElementById('btnAutoWall');
+btnAW.addEventListener('click', function(){
+  S.autoWall=!S.autoWall;
+  btnAW.setAttribute('aria-pressed', S.autoWall?'true':'false');
+  if(S.autoWall){
+    S.zoneLocked=false; learnWall();
+    document.getElementById('gridNote').textContent =
+      S.wallHits.length>=3 ? 'wall auto-detected ('+S.wallHits.length+' bounces)'
+                           : 'learning the wall from bounces';
+  } else {
+    S.zoneLocked=true;
+    document.getElementById('gridNote').textContent='wall zone (manual)';
+  }
+  overlay();
+});
+
 document.getElementById('btnZone').addEventListener('click', function(){
+  S.autoWall=false; S.zoneLocked=true;
+  btnAW.setAttribute('aria-pressed','false');
   S.setZone=1; S.zonePts=[];
   hint.textContent='Tap the top-left, then the bottom-right corner of your wall target area.';
   overlay();
