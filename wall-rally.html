@@ -130,6 +130,8 @@
   <span id="trimOut">1.00&times;</span>
 </div>
 
+<div class="panel tune" id="sessBar"><span id="sessTxt">Session 1 &middot; not started</span></div>
+
 <div class="row"><button id="btnCheck">Camera check</button></div>
 <pre class="panel diag" id="diag" hidden></pre>
 
@@ -189,7 +191,8 @@ var S={
   setZone:0, zonePts:[],
   strokes:[], pending:null, lastEventT:-9,
   trail:[], player:null, pxPerM:0, ball:null,
-  vxSign:0, frames:0, tPrev:0, fps:0
+  vxSign:0, frames:0, tPrev:0, fps:0,
+  session:1, history:[]
 };
 
 /* ---------- processing buffers ---------- */
@@ -685,30 +688,69 @@ function stopLive(){
 var btnStart=document.getElementById('btnStart'), btnStop=document.getElementById('btnStop');
 function setRunUI(on){ btnStart.disabled=on; btnStop.disabled=!on; }
 
+function archiveSession(){
+  if(!S.strokes.length) return;
+  var peak=0;
+  for(var i=0;i<S.strokes.length;i++) if(S.strokes[i].v>peak) peak=S.strokes[i].v;
+  S.history.push({n:S.session, strokes:S.strokes.length, peak:peak});
+  if(S.history.length>6) S.history.shift();
+}
+
+function clearSession(){
+  S.strokes=[]; S.pending=null; S.trail=[]; S.player=null;
+  S.pxPerM=0; S.vxSign=0; S.lastEventT=-9; S.fps=0; S.frames=0; S.tPrev=0;
+}
+
 function stopTracking(){
+  var wasRunning=S.running;
   S.running=false; stopLoops();
-  try{ vid.pause(); }catch(e){}
+  if(S.src==='live') stopLive();            // release the camera completely
+  else { try{ vid.pause(); }catch(e){} }
+  if(wasRunning) archiveSession();
   S.pending=null; S.trail=[]; S.vxSign=0;
   setRunUI(false);
   fpsEl.textContent='stopped';
-  hint.textContent='Stopped. Totals are kept \u2014 press Start tracking to add more, or Reset session to clear.';
-  overlay();
+  if(wasRunning) hint.textContent='Session '+S.session+' ended. Start tracking begins a new session.';
+  sessionBar(); overlay();
 }
 
 function startTracking(){
   if(S.running) return;
   btnStart.disabled=true;
-  var ready = (S.src==='live')
-    ? (S.stream? Promise.resolve() : startLive())
-    : (vid.src? vid.play() : Promise.reject(new Error('nofile')));
+  hint.textContent='Starting\u2026';
+  // every start is a fresh session: new camera stream, cleared counters
+  if(S.strokes.length){ archiveSession(); S.session++; }
+  else if(S.history.length) S.session=S.history[S.history.length-1].n+1;
+  clearSession(); render();
+
+  var ready;
+  if(S.src==='live'){
+    stopLive();                              // drop any stale stream first
+    ready=startLive();
+  } else if(vid.src){
+    try{ vid.currentTime=0; }catch(e){}
+    ready=vid.play();
+  } else {
+    ready=Promise.reject(new Error('nofile'));
+  }
+
   ready.then(function(){
     S.running=true; S.tPrev=0; S.frames=0; S.vxSign=0;
-    setRunUI(true);
+    setRunUI(true); sessionBar();
     if(S.src==='file') loopVFC(); else loopRAF();
   }).catch(function(e){
-    setRunUI(false);
+    setRunUI(false); sessionBar();
     if(e&&e.message==='nofile') hint.textContent='Open a clip first, then press Start tracking.';
   });
+}
+
+function sessionBar(){
+  var t='Session '+S.session+' \u00b7 '+(S.running?'tracking':'idle');
+  if(S.history.length){
+    var h=S.history[S.history.length-1];
+    t+=' \u00b7 last: session '+h.n+', '+h.strokes+' strokes, peak '+h.peak+' km/h';
+  }
+  document.getElementById('sessTxt').textContent=t;
 }
 
 btnStart.addEventListener('click', startTracking);
@@ -717,7 +759,7 @@ setRunUI(false);
 
 document.getElementById('btnLive').addEventListener('click', function(){
   S.src='live'; this.setAttribute('aria-pressed','true');
-  stopTracking(); vid.removeAttribute('src'); vid.load();
+  stopTracking(); stopLive(); vid.removeAttribute('src'); vid.load();
   hint.textContent='Press Start tracking to open the camera.';
 });
 document.getElementById('fileIn').addEventListener('change', function(e){
@@ -736,9 +778,9 @@ document.getElementById('fileIn').addEventListener('change', function(e){
 document.getElementById('btnCheck').addEventListener('click', camCheck);
 
 document.getElementById('btnReset').addEventListener('click', function(){
-  S.strokes=[]; S.pending=null; S.trail=[]; S.player=null; S.pxPerM=0; S.vxSign=0;
-  render(); overlay();
-  hint.textContent='Session cleared.';
+  clearSession(); S.history=[]; S.session=1;
+  render(); sessionBar(); overlay();
+  hint.textContent='All sessions cleared.';
 });
 
 function pair(aId,bId,setter){
@@ -789,7 +831,7 @@ draw.addEventListener('pointerdown', function(e){
 })();
 
 window.addEventListener('resize', function(){ render(); overlay(); });
-render(); overlay();
+render(); sessionBar(); overlay();
 })();
 </script>
 </body>
