@@ -1,0 +1,781 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Wall Rally</title>
+<style>
+  :root{
+    --bg:#e9e9e4; --panel:#fbfbf8; --ink:#14140f; --muted:#6d6d63;
+    --line:#c9c9c0; --label:#1f3fd8; --bar:#c3d23f; --hit:#1c8a4a; --warn:#b4451f;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#0e0e0c; --panel:#191917; --ink:#f0f0e8; --muted:#8e8e83;
+      --line:#33332e; --label:#7e97ff; --bar:#c3d23f; --hit:#4fd287; --warn:#ff8a5c;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0e0e0c; --panel:#191917; --ink:#f0f0e8; --muted:#8e8e83;
+    --line:#33332e; --label:#7e97ff; --bar:#c3d23f; --hit:#4fd287; --warn:#ff8a5c;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:var(--mono); font-size:15px; line-height:1.45;
+    -webkit-text-size-adjust:100%;
+    padding:10px 10px calc(28px + env(safe-area-inset-bottom));
+    max-width:820px; margin:0 auto;
+  }
+  h1{font-size:17px; font-weight:700; letter-spacing:-.01em; margin:2px 0 2px}
+  .sub{color:var(--muted); font-size:12px; margin:0 0 10px}
+  .panel{background:var(--panel); border:1px solid var(--line); border-radius:3px}
+  .label{color:var(--label); font-size:12.5px; font-weight:700}
+
+  /* stage */
+  #stage{position:relative; background:#000; border-radius:3px; overflow:hidden; aspect-ratio:3/4}
+  #stage.wide{aspect-ratio:16/9}
+  video,#draw{position:absolute; inset:0; width:100%; height:100%; object-fit:cover}
+  video{background:#000}
+  #draw{touch-action:none}
+  #hint{position:absolute; left:0; right:0; bottom:0; padding:7px 9px; font-size:11.5px;
+        color:#fff; background:rgba(0,0,0,.55); backdrop-filter:blur(2px)}
+  #fps{position:absolute; right:6px; top:6px; font-size:10.5px; color:#fff;
+       background:rgba(0,0,0,.45); padding:2px 5px; border-radius:2px}
+
+  /* controls */
+  .row{display:flex; flex-wrap:wrap; gap:6px; margin:8px 0}
+  button, label.file{
+    font-family:var(--mono); font-size:13px; color:var(--ink);
+    background:var(--panel); border:1px solid var(--line); border-radius:3px;
+    padding:8px 11px; cursor:pointer; -webkit-tap-highlight-color:transparent;
+  }
+  button:focus-visible, label.file:focus-within{outline:2px solid var(--label); outline-offset:1px}
+  button[aria-pressed="true"]{background:var(--ink); color:var(--panel); border-color:var(--ink)}
+  button.go{background:var(--label); border-color:var(--label); color:#fff; font-weight:700}
+  button.go[data-on="1"]{background:var(--warn); border-color:var(--warn)}
+  input[type=file]{position:absolute; width:1px; height:1px; opacity:0}
+  .seg{display:flex; border:1px solid var(--line); border-radius:3px; overflow:hidden}
+  .seg button{border:0; border-radius:0; border-right:1px solid var(--line)}
+  .seg button:last-child{border-right:0}
+  .tune{display:flex; align-items:center; gap:8px; padding:8px 10px; font-size:12px; color:var(--muted)}
+  .tune input{flex:1; accent-color:var(--label)}
+  .diag{margin:0; padding:9px 11px; font-family:var(--mono); font-size:11.5px;
+        line-height:1.6; white-space:pre-wrap; color:var(--ink); overflow-x:auto}
+
+  /* stats */
+  .cards{display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:6px}
+  .card{padding:9px 11px 11px; min-height:92px}
+  .card.speed{grid-column:1 / -1}
+  .big{font-size:40px; font-weight:700; letter-spacing:-.03em; line-height:1.05; margin-top:4px}
+  .unit{font-size:14px; font-weight:400; color:var(--muted); margin-left:3px}
+  .fine{font-size:11.5px; color:var(--muted); white-space:pre-line; margin-top:5px}
+  .lower{display:grid; grid-template-columns:1fr; gap:6px; margin-top:6px}
+  @media (min-width:620px){ .lower{grid-template-columns:1.15fr 1fr} .cards{grid-template-columns:1fr 1fr 1.3fr} .card.speed{grid-column:auto} }
+  .cell{padding:9px 11px 8px}
+  .cellhead{display:flex; justify-content:space-between; align-items:baseline; gap:8px}
+  .cellhead em{font-style:normal; font-size:11.5px; color:var(--muted)}
+  canvas.plot{width:100%; height:112px; display:block; margin-top:6px}
+  #grid{width:100%; aspect-ratio:16/9; display:block; margin-top:6px;
+        border:1px solid var(--line); border-radius:2px}
+  .log{margin-top:6px; padding:9px 11px; font-size:12px; color:var(--muted); overflow-x:auto}
+  .log table{border-collapse:collapse; width:100%; min-width:320px}
+  .log th{text-align:left; font-weight:700; color:var(--label); font-size:11.5px; padding:2px 8px 4px 0}
+  .log td{padding:2px 8px 2px 0; white-space:nowrap}
+  .note{font-size:11.5px; color:var(--muted); margin-top:10px}
+  .note b{color:var(--ink); font-weight:700}
+  a{color:var(--label)}
+</style>
+</head>
+<body>
+
+<h1>Wall Rally</h1>
+<p class="sub">Point the phone at yourself and the wall, prop it up, and rally.</p>
+
+<div id="stage" class="panel">
+  <video id="vid" playsinline muted></video>
+  <canvas id="draw"></canvas>
+  <div id="fps">idle</div>
+  <div id="hint">Choose Live camera or a recorded clip, then press Track.</div>
+</div>
+
+<div class="row">
+  <button class="go" id="btnRun">Track</button>
+  <div class="seg" role="group" aria-label="Source">
+    <button id="btnLive" aria-pressed="true">Live camera</button>
+    <label class="file" tabindex="0">Open clip<input type="file" id="fileIn" accept="video/*"></label>
+  </div>
+  <button id="btnReset">Reset session</button>
+</div>
+
+<div class="row">
+  <button id="btnZone">Set wall zone</button>
+  <div class="seg" role="group" aria-label="Wall side">
+    <button id="wallL" aria-pressed="true">Wall left</button>
+    <button id="wallR">Wall right</button>
+  </div>
+  <div class="seg" role="group" aria-label="Forehand side">
+    <button id="fhL" aria-pressed="true">Forehand left of body</button>
+    <button id="fhR">right</button>
+  </div>
+</div>
+
+<div class="panel tune">
+  <span>Scale trim</span>
+  <input type="range" id="trim" min="60" max="160" value="100">
+  <span id="trimOut">1.00&times;</span>
+</div>
+
+<div class="row"><button id="btnCheck">Camera check</button></div>
+<pre class="panel diag" id="diag" hidden></pre>
+
+<div class="cards">
+  <div class="card panel"><span class="label">strokes</span><div class="big" id="nStrokes">0</div></div>
+  <div class="card panel"><span class="label">forehand / backhand</span><div class="big" id="nFB">0 / 0</div></div>
+  <div class="card panel speed">
+    <span class="label">shot speed</span>
+    <div class="big"><span id="vLast">--</span><span class="unit">km/h</span></div>
+    <div class="fine" id="vFine">peak: -- km/h
+forehand avg: -- km/h
+backhand avg: -- km/h</div>
+  </div>
+</div>
+
+<div class="lower">
+  <div class="cell panel">
+    <div class="cellhead"><span class="label">speed history</span><em id="plotMax">max -- km/h</em></div>
+    <canvas class="plot" id="plot"></canvas>
+  </div>
+  <div class="cell panel">
+    <div class="cellhead"><span class="label">shot placement</span><em id="gridNote">wall zone</em></div>
+    <canvas id="grid"></canvas>
+  </div>
+</div>
+
+<div class="log panel">
+  <table>
+    <thead><tr><th>#</th><th>type</th><th>km/h</th><th>placement</th></tr></thead>
+    <tbody id="logBody"><tr><td colspan="4">No strokes yet.</td></tr></tbody>
+  </table>
+</div>
+
+<p class="note">
+  <b>How speed is measured here.</b> The browser has no access to LiDAR, so the prototype
+  converts pixels to metres from the ball's apparent width (a ball is 6.7 cm across) and smooths it.
+  Use Scale trim if readings run high or low against a known shot. The native build reads
+  ARKit <b>sceneDepth</b> instead, which removes the guesswork.
+</p>
+
+<script>
+(function(){
+"use strict";
+
+/* ---------- elements ---------- */
+var vid=document.getElementById('vid'), draw=document.getElementById('draw'),
+    stage=document.getElementById('stage'), hint=document.getElementById('hint'),
+    fpsEl=document.getElementById('fps'), dctx=draw.getContext('2d');
+var plot=document.getElementById('plot'), pctx=plot.getContext('2d');
+var grid=document.getElementById('grid'), gctx=grid.getContext('2d');
+
+/* ---------- session state ---------- */
+var S={
+  running:false, src:'live', stream:null,
+  wallSide:'left', fhSide:'left', trim:1,
+  zone:{x:.03,y:.14,w:.44,h:.62},   // fractions of frame, default for wall on the left
+  setZone:0, zonePts:[],
+  strokes:[], pending:null, lastEventT:-9,
+  trail:[], player:null, pxPerM:0, ball:null,
+  vxSign:0, frames:0, tPrev:0, fps:0
+};
+
+/* ---------- processing buffers ---------- */
+var PW=192, PH=256, proc=document.createElement('canvas'), pc=proc.getContext('2d',{willReadFrequently:true});
+var prevGray=null, ballMask=null, motMask=null, visited=null;
+function sizeProc(w,h){
+  var ar=(w&&h)?w/h:0.75;
+  PW=192; PH=Math.max(96,Math.round(PW/ar));
+  proc.width=PW; proc.height=PH;
+  prevGray=new Uint8Array(PW*PH); ballMask=new Uint8Array(PW*PH);
+  motMask=new Uint8Array(PW*PH); visited=new Uint8Array(PW*PH);
+  S.frames=0;
+  stage.classList.toggle('wide', ar>1.2);
+}
+sizeProc(3,4);
+
+/* ---------- persistence (per-viewer convenience only) ---------- */
+function saveCfg(){
+  try{ localStorage.setItem('wallrally.cfg', JSON.stringify({
+    wallSide:S.wallSide, fhSide:S.fhSide, trim:S.trim, zone:S.zone
+  })); }catch(e){}
+}
+function loadCfg(){
+  try{
+    var raw=localStorage.getItem('wallrally.cfg'); if(!raw) return;
+    var c=JSON.parse(raw)||{};
+    if(c.wallSide) S.wallSide=c.wallSide;
+    if(c.fhSide) S.fhSide=c.fhSide;
+    if(typeof c.trim==='number') S.trim=c.trim;
+    if(c.zone && typeof c.zone.w==='number') S.zone=c.zone;
+  }catch(e){}
+}
+loadCfg();
+
+/* ---------- blob finding ---------- */
+function blobs(mask,minA,maxA,limit){
+  visited.fill(0);
+  var out=[], stack=new Int32Array(PW*PH), i,j;
+  for(var y=0;y<PH;y++){
+    for(var x=0;x<PW;x++){
+      i=y*PW+x;
+      if(!mask[i]||visited[i]) continue;
+      var sp=0; stack[sp++]=i; visited[i]=1;
+      var n=0,sx=0,sy=0,x0=x,x1=x,y0=y,y1=y;
+      while(sp){
+        var p=stack[--sp], px=p%PW, py=(p-px)/PW;
+        n++; sx+=px; sy+=py;
+        if(px<x0)x0=px; if(px>x1)x1=px; if(py<y0)y0=py; if(py>y1)y1=py;
+        for(var dy=-1;dy<=1;dy++)for(var dx=-1;dx<=1;dx++){
+          var qx=px+dx, qy=py+dy;
+          if(qx<0||qy<0||qx>=PW||qy>=PH) continue;
+          var q=qy*PW+qx;
+          if(mask[q]&&!visited[q]){visited[q]=1; stack[sp++]=q;}
+        }
+      }
+      if(n>=minA&&n<=maxA){
+        var w=x1-x0+1, h=y1-y0+1, fill=n/(w*h), ar=Math.min(w,h)/Math.max(w,h);
+        out.push({cx:sx/n, cy:sy/n, n:n, w:w, h:h, circ:fill*ar});
+      }
+      if(out.length>=(limit||400)) return out;
+    }
+  }
+  return out;
+}
+
+/* ---------- per-frame analysis ---------- */
+function frameMasks(){
+  pc.drawImage(vid,0,0,PW,PH);
+  var d;
+  try{ d=pc.getImageData(0,0,PW,PH).data; }catch(e){ return false; }
+  var n=PW*PH, MT=16;
+  for(var i=0;i<n;i++){
+    var k=i<<2, r=d[k], g=d[k+1], b=d[k+2];
+    var gray=(r*77+g*151+b*28)>>8;
+    var diff=Math.abs(gray-prevGray[i]);
+    prevGray[i]=gray;
+    var moving=diff>MT?1:0;
+    motMask[i]=moving;
+    // tennis ball: bright yellow-green, clearly above blue, and it must be moving
+    // (motion gate is what rejects the graffiti and court paint)
+    ballMask[i]=(moving && g>95 && g>b+40 && r>b+20 && g>r-45)?1:0;
+  }
+  return true;
+}
+
+function pickBall(cands){
+  var best=null,bs=-1;
+  var pred=null, tr=S.trail;
+  if(tr.length>=2){
+    var a=tr[tr.length-2], b=tr[tr.length-1], dt=b.t-a.t;
+    if(dt>0&&dt<0.2) pred={x:b.x+(b.x-a.x), y:b.y+(b.y-a.y)};
+  }
+  for(var i=0;i<cands.length;i++){
+    var c=cands[i];
+    if(c.n<2||c.n>420) continue;
+    var s=c.circ*2 + Math.min(c.n,90)/90;
+    if(pred){
+      var dd=Math.hypot(c.cx-pred.x,c.cy-pred.y);
+      s+=Math.max(0,2.2-dd/(PW*0.12));
+    }
+    if(s>bs){bs=s;best=c;}
+  }
+  return best;
+}
+
+function updateScale(b){
+  if(!b||b.n<5||b.circ<0.45) return;
+  var dia=(b.w+b.h)/2;
+  if(dia<2||dia>26) return;
+  var p=dia/0.067;                       // proc px per metre
+  S.pxPerM = S.pxPerM ? S.pxPerM*0.9+p*0.1 : p;
+}
+
+function velocity(){
+  var tr=S.trail; if(tr.length<3) return null;
+  var a=tr[tr.length-3], b=tr[tr.length-1], dt=b.t-a.t;
+  if(dt<=0||dt>0.25) return null;
+  return {vx:(b.x-a.x)/dt, vy:(b.y-a.y)/dt, t:b.t, x:b.x, y:b.y};
+}
+
+function kmh(vpx){
+  if(!S.pxPerM) return null;
+  return vpx/S.pxPerM*3.6*S.trim;
+}
+
+function towardWall(vx){ return S.wallSide==='left' ? vx<0 : vx>0; }
+
+function zoneRect(){
+  var z=S.zone;
+  return {x:z.x*PW, y:z.y*PH, w:z.w*PW, h:z.h*PH};
+}
+
+function classify(px, plx){
+  if(plx==null) return '?';
+  var dx=px-plx;
+  if(Math.abs(dx)<PW*0.015) return '?';
+  var leftIsF = S.fhSide==='left';
+  return ((dx<0)===leftIsF) ? 'F' : 'B';
+}
+
+function onReversal(ev){
+  if(ev.t-S.lastEventT<0.18) return;
+  S.lastEventT=ev.t;
+  var z=zoneRect();
+  var nearWall = S.wallSide==='left' ? ev.x < Math.max(z.x+z.w*0.5, PW*0.34)
+                                     : ev.x > Math.min(z.x+z.w*0.5, PW*0.66);
+  var plx = S.player? S.player.x : null;
+  var nearPlayer = plx!=null && Math.abs(ev.x-plx)<PW*0.30;
+
+  if(towardWall(ev.vx) && (nearPlayer || !nearWall)){
+    // ball just left the strings
+    commitPending();
+    S.pending={t:ev.t, peak:0, type:classify(ev.x, plx), x:ev.x, y:ev.y, place:null};
+  } else if(nearWall){
+    // ball just came off the wall — that contact point is the placement
+    var nx=(ev.x-z.x)/z.w, ny=(ev.y-z.y)/z.h;
+    nx=Math.min(1,Math.max(0,nx)); ny=Math.min(1,Math.max(0,ny));
+    if(S.pending && !S.pending.place) S.pending.place={x:nx,y:ny};
+    else if(S.strokes.length && !S.strokes[S.strokes.length-1].place)
+      S.strokes[S.strokes.length-1].place={x:nx,y:ny};
+  }
+}
+
+function commitPending(){
+  var p=S.pending; S.pending=null;
+  if(!p) return;
+  var v=kmh(p.peak);
+  if(!v || v<8 || v>260) return;              // discard nonsense
+  S.strokes.push({n:S.strokes.length+1, v:Math.round(v), type:p.type, place:p.place});
+  render();
+}
+
+/* ---------- main loop ---------- */
+function step(tSec){
+  if(!frameMasks()) return;
+  S.frames++;
+  if(S.frames<4) return;                       // let the diff warm up
+
+  var bcand=blobs(ballMask,2,420,300);
+  var b=pickBall(bcand);
+  S.ball=b;
+
+  var big=blobs(motMask,220,PW*PH,60), pl=null;
+  for(var i=0;i<big.length;i++) if(!pl||big[i].n>pl.n) pl=big[i];
+  if(pl){
+    var px=pl.cx, py=pl.cy;
+    S.player = S.player ? {x:S.player.x*0.7+px*0.3, y:S.player.y*0.7+py*0.3, n:pl.n}
+                        : {x:px,y:py,n:pl.n};
+  }
+
+  if(b){
+    updateScale(b);
+    S.trail.push({x:b.cx,y:b.cy,t:tSec});
+    if(S.trail.length>46) S.trail.shift();
+    var v=velocity();
+    if(v){
+      var sp=Math.hypot(v.vx,v.vy);
+      if(S.pending && tSec-S.pending.t<0.4) S.pending.peak=Math.max(S.pending.peak,sp);
+      if(S.pending && tSec-S.pending.t>=0.4) commitPending();
+      var sg = v.vx>0?1:-1;
+      if(Math.abs(v.vx)>PW*0.35){
+        if(S.vxSign && sg!==S.vxSign) onReversal(v);
+        S.vxSign=sg;
+      }
+    }
+  } else {
+    if(S.trail.length && tSec-S.trail[S.trail.length-1].t>0.5) S.trail.length=0;
+    if(S.pending && tSec-S.pending.t>=0.4) commitPending();
+  }
+  overlay();
+}
+
+/* ---------- overlay ---------- */
+function overlay(){
+  var W=draw.clientWidth, H=draw.clientHeight, dpr=Math.min(2,window.devicePixelRatio||1);
+  if(draw.width!==Math.round(W*dpr)){ draw.width=Math.round(W*dpr); draw.height=Math.round(H*dpr); }
+  dctx.setTransform(dpr,0,0,dpr,0,0);
+  dctx.clearRect(0,0,W,H);
+  var sx=W/PW, sy=H/PH;
+
+  // wall zone
+  var z=zoneRect();
+  dctx.strokeStyle='rgba(255,255,255,.75)'; dctx.lineWidth=1.5;
+  dctx.setLineDash([5,4]);
+  dctx.strokeRect(z.x*sx, z.y*sy, z.w*sx, z.h*sy);
+  dctx.setLineDash([]);
+
+  // trail
+  var tr=S.trail;
+  for(var i=1;i<tr.length;i++){
+    var hue=90+ (i/tr.length)*130;
+    dctx.strokeStyle='hsla('+hue+',85%,55%,'+(0.25+0.65*i/tr.length)+')';
+    dctx.lineWidth=3.2; dctx.lineCap='round';
+    dctx.beginPath();
+    dctx.moveTo(tr[i-1].x*sx,tr[i-1].y*sy);
+    dctx.lineTo(tr[i].x*sx,tr[i].y*sy);
+    dctx.stroke();
+  }
+  // ball
+  if(S.ball){
+    dctx.strokeStyle='#3a5cff'; dctx.lineWidth=2.5;
+    dctx.beginPath(); dctx.arc(S.ball.cx*sx,S.ball.cy*sy,12,0,6.2832); dctx.stroke();
+  }
+  // player centroid
+  if(S.player){
+    dctx.strokeStyle='rgba(255,255,255,.9)'; dctx.lineWidth=2;
+    dctx.beginPath(); dctx.arc(S.player.x*sx,S.player.y*sy,9,0,6.2832); dctx.stroke();
+    dctx.beginPath(); dctx.moveTo(S.player.x*sx,S.player.y*sy+9);
+    dctx.lineTo(S.player.x*sx,S.player.y*sy+30); dctx.stroke();
+  }
+  // last placement
+  var last=S.strokes[S.strokes.length-1];
+  if(last&&last.place){
+    var lx=(z.x+last.place.x*z.w)*sx, ly=(z.y+last.place.y*z.h)*sy;
+    dctx.fillStyle='rgba(28,138,74,.9)';
+    dctx.beginPath(); dctx.arc(lx,ly,9,0,6.2832); dctx.fill();
+    dctx.fillStyle='#fff'; dctx.font='bold 11px '+getComputedStyle(document.body).fontFamily;
+    dctx.textAlign='center'; dctx.textBaseline='middle';
+    dctx.fillText(String(last.n),lx,ly+.5);
+  }
+  // zone-setting taps
+  if(S.setZone){
+    dctx.fillStyle='rgba(58,92,255,.9)';
+    for(var k=0;k<S.zonePts.length;k++){
+      dctx.beginPath(); dctx.arc(S.zonePts[k].x*W,S.zonePts[k].y*H,7,0,6.2832); dctx.fill();
+    }
+  }
+}
+
+/* ---------- dashboard ---------- */
+function render(){
+  var st=S.strokes, f=0,bk=0, fs=0,bs=0, peak=0;
+  for(var i=0;i<st.length;i++){
+    if(st[i].type==='F'){f++;fs+=st[i].v;}
+    else if(st[i].type==='B'){bk++;bs+=st[i].v;}
+    if(st[i].v>peak) peak=st[i].v;
+  }
+  document.getElementById('nStrokes').textContent=st.length;
+  document.getElementById('nFB').textContent=f+' / '+bk;
+  document.getElementById('vLast').textContent=st.length?st[st.length-1].v:'--';
+  document.getElementById('vFine').textContent=
+    'peak: '+(peak||'--')+' km/h\n'+
+    'forehand avg: '+(f?Math.round(fs/f):'--')+' km/h\n'+
+    'backhand avg: '+(bk?Math.round(bs/bk):'--')+' km/h';
+  document.getElementById('plotMax').textContent='max '+(peak||'--')+' km/h';
+
+  drawPlot(st,peak); drawGrid(st); drawLog(st);
+}
+
+function drawPlot(st,peak){
+  var dpr=Math.min(2,window.devicePixelRatio||1), W=plot.clientWidth, H=112;
+  plot.width=Math.round(W*dpr); plot.height=Math.round(H*dpr);
+  pctx.setTransform(dpr,0,0,dpr,0,0);
+  var cs=getComputedStyle(document.body), ink=cs.color;
+  var line=getComputedStyle(document.documentElement).getPropertyValue('--line').trim()||'#ccc';
+  var bar=getComputedStyle(document.documentElement).getPropertyValue('--bar').trim()||'#c3d23f';
+  var muted=getComputedStyle(document.documentElement).getPropertyValue('--muted').trim()||'#888';
+  pctx.clearRect(0,0,W,H);
+  var top=Math.max(40,Math.ceil((peak||40)*1.15/10)*10), L=30, R=6, B=18, T=6;
+  var pw=W-L-R, ph=H-T-B;
+  pctx.strokeStyle=line; pctx.lineWidth=1;
+  pctx.font='10px '+cs.fontFamily; pctx.fillStyle=muted; pctx.textAlign='right';
+  [0,.5,1].forEach(function(f){
+    var y=T+ph-f*ph;
+    pctx.beginPath(); pctx.moveTo(L,y+.5); pctx.lineTo(W-R,y+.5); pctx.stroke();
+    pctx.fillText(String(Math.round(top*f)),L-5,y+3);
+  });
+  if(!st.length){
+    pctx.textAlign='left'; pctx.fillText('waiting for strokes',L+4,T+ph/2);
+    return;
+  }
+  var show=st.slice(-22), bw=Math.max(3,Math.min(22,pw/show.length-3));
+  show.forEach(function(s,i){
+    var x=L+ (i+.5)*(pw/show.length) - bw/2;
+    var h=Math.max(1, s.v/top*ph);
+    pctx.fillStyle=bar;
+    pctx.fillRect(x, T+ph-h, bw, h);
+  });
+  pctx.fillStyle=muted; pctx.textAlign='center';
+  pctx.fillText('stroke #'+show[0].n, L+pw*0.08, H-5);
+  pctx.fillText('#'+show[show.length-1].n, L+pw*0.95, H-5);
+}
+
+function drawGrid(st){
+  var dpr=Math.min(2,window.devicePixelRatio||1), W=grid.clientWidth, H=Math.round(W*9/16);
+  grid.width=Math.round(W*dpr); grid.height=Math.round(H*dpr);
+  gctx.setTransform(dpr,0,0,dpr,0,0);
+  var cs=getComputedStyle(document.body);
+  var line=getComputedStyle(document.documentElement).getPropertyValue('--line').trim()||'#ccc';
+  var hit=getComputedStyle(document.documentElement).getPropertyValue('--hit').trim()||'#1c8a4a';
+  var muted=getComputedStyle(document.documentElement).getPropertyValue('--muted').trim()||'#888';
+  gctx.clearRect(0,0,W,H);
+  gctx.strokeStyle=line; gctx.lineWidth=1;
+  for(var i=1;i<3;i++){
+    gctx.beginPath(); gctx.moveTo(W*i/3,0); gctx.lineTo(W*i/3,H); gctx.stroke();
+    gctx.beginPath(); gctx.moveTo(0,H*i/3); gctx.lineTo(W,H*i/3); gctx.stroke();
+  }
+  var placed=st.filter(function(s){return s.place;});
+  if(!placed.length){
+    gctx.fillStyle=muted; gctx.font='11px '+cs.fontFamily; gctx.textAlign='center';
+    gctx.fillText('no wall contacts yet',W/2,H/2+4);
+    return;
+  }
+  placed.slice(-12).forEach(function(s,i,arr){
+    var x=s.place.x*W, y=s.place.y*H, fresh=(i===arr.length-1);
+    gctx.strokeStyle=hit; gctx.lineWidth=fresh?2.4:1.4;
+    gctx.globalAlpha=fresh?1:0.55;
+    gctx.beginPath(); gctx.arc(x,y,fresh?11:9,0,6.2832); gctx.stroke();
+    gctx.fillStyle=hit; gctx.font='bold 10px '+cs.fontFamily;
+    gctx.textAlign='center'; gctx.textBaseline='middle';
+    gctx.fillText(String(s.n),x,y+.5);
+    gctx.globalAlpha=1;
+  });
+}
+
+function drawLog(st){
+  var tb=document.getElementById('logBody');
+  if(!st.length){ tb.innerHTML='<tr><td colspan="4">No strokes yet.</td></tr>'; return; }
+  var rows=st.slice(-8).reverse().map(function(s){
+    var p=s.place? (Math.round(s.place.x*100)+'% / '+Math.round(s.place.y*100)+'%') : '—';
+    var t=s.type==='F'?'forehand':(s.type==='B'?'backhand':'unclear');
+    return '<tr><td>'+s.n+'</td><td>'+t+'</td><td>'+s.v+'</td><td>'+p+'</td></tr>';
+  });
+  tb.innerHTML=rows.join('');
+}
+
+/* ---------- capture drivers ---------- */
+var rafId=0, vfcId=0;
+function loopRAF(){
+  rafId=requestAnimationFrame(loopRAF);
+  if(!S.running||vid.readyState<2) return;
+  var t=performance.now()/1000;
+  if(S.tPrev){ var dt=t-S.tPrev; S.fps=S.fps? S.fps*0.85+(1/dt)*0.15 : 1/dt; }
+  S.tPrev=t;
+  step(t);
+  fpsEl.textContent=Math.round(S.fps)+' fps'+(S.pxPerM?' · '+(S.pxPerM/PW*100).toFixed(0)+' px/m':'');
+}
+function loopVFC(){
+  if(!vid.requestVideoFrameCallback) return loopRAF();
+  function cb(now,meta){
+    if(!S.running) return;
+    var t=meta.mediaTime;
+    if(S.tPrev){ var dt=t-S.tPrev; if(dt>0) S.fps=S.fps? S.fps*0.85+(1/dt)*0.15 : 1/dt; }
+    S.tPrev=t;
+    step(t);
+    fpsEl.textContent=Math.round(S.fps)+' fps'+(S.pxPerM?' · '+(S.pxPerM/PW*100).toFixed(0)+' px/m':'');
+    vfcId=vid.requestVideoFrameCallback(cb);
+  }
+  vfcId=vid.requestVideoFrameCallback(cb);
+}
+function stopLoops(){
+  if(rafId) cancelAnimationFrame(rafId), rafId=0;
+  if(vfcId&&vid.cancelVideoFrameCallback) vid.cancelVideoFrameCallback(vfcId), vfcId=0;
+}
+
+function getCam(){
+  var want={video:{facingMode:{ideal:'environment'}, width:{ideal:1280},
+            height:{ideal:720}, frameRate:{ideal:60}}, audio:false};
+  return navigator.mediaDevices.getUserMedia(want).catch(function(e){
+    var n=(e&&e.name)||'';
+    if(n==='OverconstrainedError'||n==='NotFoundError'||n==='TypeError')
+      return navigator.mediaDevices.getUserMedia({video:true, audio:false});
+    throw e;
+  });
+}
+
+function camCheck(){
+  var out=document.getElementById('diag'), lines=[];
+  out.hidden=false;
+  function flush(){ out.textContent=lines.join('\n'); }
+  var embedded; try{ embedded=window.top!==window.self; }catch(e){ embedded=true; }
+  lines.push('page: '+(embedded?'inside a frame':'top-level tab'));
+  lines.push('address: '+location.protocol+'//'+location.hostname);
+  lines.push('secure context: '+(window.isSecureContext?'yes':'no'));
+  var api=!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia);
+  lines.push('camera API: '+(api?'present':'missing'));
+  flush();
+  var perm=Promise.resolve();
+  try{
+    if(navigator.permissions&&navigator.permissions.query)
+      perm=navigator.permissions.query({name:'camera'}).then(
+        function(r){ lines.push('permission state: '+r.state); },
+        function(){ lines.push('permission state: not reported'); });
+  }catch(e){ lines.push('permission state: not reported'); }
+  perm.then(function(){
+    flush();
+    if(!api){
+      lines.push(embedded
+        ? 'verdict: this frame withholds the camera API. Host the file yourself and open it in a Safari tab.'
+        : 'verdict: this browser has no camera API.');
+      return flush();
+    }
+    return navigator.mediaDevices.getUserMedia({video:true}).then(function(s){
+      var t=s.getVideoTracks()[0], st=t&&t.getSettings?t.getSettings():{};
+      lines.push('opened: '+(st.width||'?')+'x'+(st.height||'?')+
+                 ' @ '+(st.frameRate?Math.round(st.frameRate):'?')+' fps');
+      s.getTracks().forEach(function(x){x.stop();});
+      lines.push('verdict: camera works here. Press Track.');
+      flush();
+    }, function(e){
+      lines.push('getUserMedia failed: '+((e&&e.name)||'Error'));
+      lines.push(embedded
+        ? 'verdict: a frame cannot grant camera. Host the file and open it in a Safari tab.'
+        : 'verdict: allow camera for this site in Safari, then reload.');
+      flush();
+    });
+  });
+}
+
+function camFail(msg){
+  hint.innerHTML='';
+  var t=document.createElement('span'); t.textContent=msg+' ';
+  var a=document.createElement('a');
+  a.href=location.href; a.target='_blank'; a.rel='noopener';
+  a.textContent='Open in its own tab';
+  a.style.color='#9ec2ff';
+  hint.appendChild(t); hint.appendChild(a);
+  var t2=document.createElement('span');
+  t2.textContent=' — or use Open clip, which needs no camera.';
+  hint.appendChild(t2);
+}
+
+function startLive(){
+  var embedded = (function(){ try{ return window.top!==window.self; }catch(e){ return true; } })();
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+    camFail(embedded ? 'Camera is blocked in this embedded frame.' : 'This browser exposes no camera API.');
+    return Promise.reject(new Error('nocam'));
+  }
+  return getCam().then(function(s){
+    S.stream=s; vid.srcObject=s; vid.removeAttribute('src'); vid.loop=false;
+    return vid.play();
+  }).then(function(){
+    sizeProc(vid.videoWidth,vid.videoHeight);
+    hint.textContent='Prop the phone so both you and the wall stay in frame, then rally.';
+  }).catch(function(err){
+    var n=(err&&err.name)||'Error', m={
+      NotAllowedError:'Camera permission was refused (by you, by iOS Settings, or by the frame policy).',
+      NotFoundError:'No camera was found on this device.',
+      NotReadableError:'The camera is busy in another app.',
+      SecurityError:'Camera needs a secure top-level page.',
+      AbortError:'The camera request was cut short.'
+    }[n] || ('Camera error: '+n+'.');
+    camFail(m);
+    throw new Error('nocam');
+  });
+}
+function stopLive(){
+  if(S.stream){ S.stream.getTracks().forEach(function(t){t.stop();}); S.stream=null; }
+  vid.srcObject=null;
+}
+
+/* ---------- controls ---------- */
+var btnRun=document.getElementById('btnRun');
+btnRun.addEventListener('click', function(){
+  if(S.running){
+    S.running=false; stopLoops(); vid.pause();
+    btnRun.textContent='Track'; btnRun.removeAttribute('data-on');
+    fpsEl.textContent='paused';
+    return;
+  }
+  var ready = (S.src==='live')
+    ? (S.stream? Promise.resolve() : startLive())
+    : (vid.src? vid.play() : Promise.reject(new Error('nofile')));
+  ready.then(function(){
+    S.running=true; S.tPrev=0; S.frames=0;
+    btnRun.textContent='Stop'; btnRun.setAttribute('data-on','1');
+    if(S.src==='file') loopVFC(); else loopRAF();
+  }).catch(function(e){
+    if(e&&e.message==='nofile') hint.textContent='Open a clip first, then press Track.';
+  });
+});
+
+document.getElementById('btnLive').addEventListener('click', function(){
+  S.src='live'; this.setAttribute('aria-pressed','true');
+  vid.pause(); vid.removeAttribute('src'); vid.load();
+  hint.textContent='Press Track to start the camera.';
+});
+document.getElementById('fileIn').addEventListener('change', function(e){
+  var f=e.target.files&&e.target.files[0]; if(!f) return;
+  S.src='file'; document.getElementById('btnLive').setAttribute('aria-pressed','false');
+  stopLive();
+  vid.srcObject=null; vid.src=URL.createObjectURL(f); vid.loop=false;
+  vid.addEventListener('loadedmetadata', function once(){
+    vid.removeEventListener('loadedmetadata',once);
+    sizeProc(vid.videoWidth,vid.videoHeight);
+    hint.textContent=f.name+' loaded — press Track.';
+    overlay();
+  });
+});
+
+document.getElementById('btnCheck').addEventListener('click', camCheck);
+
+document.getElementById('btnReset').addEventListener('click', function(){
+  S.strokes=[]; S.pending=null; S.trail=[]; S.player=null; S.pxPerM=0; S.vxSign=0;
+  render(); overlay();
+  hint.textContent='Session cleared.';
+});
+
+function pair(aId,bId,setter){
+  var a=document.getElementById(aId), b=document.getElementById(bId);
+  a.addEventListener('click',function(){a.setAttribute('aria-pressed','true');b.setAttribute('aria-pressed','false');setter('a');});
+  b.addEventListener('click',function(){b.setAttribute('aria-pressed','true');a.setAttribute('aria-pressed','false');setter('b');});
+}
+pair('wallL','wallR',function(k){
+  S.wallSide = k==='a'?'left':'right';
+  S.zone = S.wallSide==='left' ? {x:.03,y:.14,w:.44,h:.62} : {x:.53,y:.14,w:.44,h:.62};
+  saveCfg(); overlay();
+});
+pair('fhL','fhR',function(k){ S.fhSide = k==='a'?'left':'right'; saveCfg(); });
+
+var trim=document.getElementById('trim'), trimOut=document.getElementById('trimOut');
+trim.value=Math.round(S.trim*100); trimOut.textContent=S.trim.toFixed(2)+'\u00d7';
+trim.addEventListener('input',function(){
+  S.trim=+trim.value/100; trimOut.textContent=S.trim.toFixed(2)+'\u00d7'; saveCfg();
+});
+
+document.getElementById('btnZone').addEventListener('click', function(){
+  S.setZone=1; S.zonePts=[];
+  hint.textContent='Tap the top-left, then the bottom-right corner of your wall target area.';
+  overlay();
+});
+draw.addEventListener('pointerdown', function(e){
+  if(!S.setZone) return;
+  var r=draw.getBoundingClientRect();
+  S.zonePts.push({x:(e.clientX-r.left)/r.width, y:(e.clientY-r.top)/r.height});
+  if(S.zonePts.length===2){
+    var a=S.zonePts[0], b=S.zonePts[1];
+    S.zone={x:Math.min(a.x,b.x), y:Math.min(a.y,b.y),
+            w:Math.max(.08,Math.abs(b.x-a.x)), h:Math.max(.08,Math.abs(b.y-a.y))};
+    S.setZone=0; saveCfg();
+    hint.textContent='Wall zone set. Placement is now mapped to that rectangle.';
+  }
+  overlay();
+});
+
+/* keep buttons reflecting restored config */
+(function syncUI(){
+  var isL=S.wallSide==='left';
+  document.getElementById('wallL').setAttribute('aria-pressed',isL?'true':'false');
+  document.getElementById('wallR').setAttribute('aria-pressed',isL?'false':'true');
+  var fL=S.fhSide==='left';
+  document.getElementById('fhL').setAttribute('aria-pressed',fL?'true':'false');
+  document.getElementById('fhR').setAttribute('aria-pressed',fL?'false':'true');
+})();
+
+window.addEventListener('resize', function(){ render(); overlay(); });
+render(); overlay();
+})();
+</script>
+</body>
+</html>
