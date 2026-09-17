@@ -85,6 +85,15 @@
   .log table{border-collapse:collapse; width:100%; min-width:320px}
   .log th{text-align:left; font-weight:700; color:var(--label); font-size:11.5px; padding:2px 8px 4px 0}
   .log td{padding:2px 8px 2px 0; white-space:nowrap}
+  .clips{margin-top:6px; padding:9px 11px 11px}
+  .clip{display:flex; align-items:center; gap:6px; flex-wrap:wrap;
+        border-top:1px solid var(--line); padding:8px 0 0; margin-top:8px}
+  .clip:first-of-type{border-top:0; padding-top:2px; margin-top:6px}
+  .clip .meta{flex:1 1 130px; font-size:12px; min-width:130px}
+  .clip .meta small{display:block; color:var(--muted); font-size:11px}
+  .clip button, .clip a.dl{font-size:12px; padding:6px 9px; text-decoration:none}
+  .clip a.dl{border:1px solid var(--line); border-radius:3px; background:var(--panel); color:var(--ink)}
+  .clip button.x{color:var(--warn)}
   .note{font-size:11.5px; color:var(--muted); margin-top:10px}
   .note b{color:var(--ink); font-weight:700}
   a{color:var(--label)}
@@ -165,6 +174,17 @@ backhand avg: -- km/h</div>
   </table>
 </div>
 
+<div class="clips panel">
+  <div class="cellhead">
+    <span class="label">replays &nbsp;回放</span>
+    <em id="clipNote">recording on</em>
+  </div>
+  <div class="row" style="margin:6px 0 0">
+    <button id="btnRecToggle" aria-pressed="true">Record each session</button>
+  </div>
+  <div id="clipList"></div>
+</div>
+
 <p class="note">
   <b>How speed is measured here.</b> The browser has no access to LiDAR, so the prototype
   converts pixels to metres from the ball's apparent width (a ball is 6.7 cm across) and smooths it.
@@ -192,7 +212,8 @@ var S={
   strokes:[], pending:null, lastEventT:-9,
   trail:[], player:null, pxPerM:0, ball:null,
   vxSign:0, frames:0, tPrev:0, fps:0,
-  session:1, history:[]
+  session:1, history:[],
+  recOn:true, mr:null, chunks:[], recT0:0, clips:[]
 };
 
 /* ---------- processing buffers ---------- */
@@ -684,6 +705,134 @@ function stopLive(){
   vid.srcObject=null;
 }
 
+/* ---------- recording ---------- */
+function recType(){
+  if(!window.MediaRecorder) return null;
+  var c=['video/mp4','video/mp4;codecs=avc1','video/webm;codecs=vp9','video/webm'];
+  for(var i=0;i<c.length;i++){
+    try{ if(MediaRecorder.isTypeSupported(c[i])) return c[i]; }catch(e){}
+  }
+  return '';
+}
+function startRec(stream){
+  if(!S.recOn||!stream) return;
+  var t=recType();
+  if(t===null){ document.getElementById('clipNote').textContent='recording unsupported here'; return; }
+  try{
+    S.mr = t ? new MediaRecorder(stream,{mimeType:t, videoBitsPerSecond:4000000})
+             : new MediaRecorder(stream);
+  }catch(e){
+    try{ S.mr=new MediaRecorder(stream); }catch(e2){ S.mr=null; return; }
+  }
+  S.chunks=[]; S.recT0=Date.now();
+  var sess=S.session;
+  S.mr.ondataavailable=function(e){ if(e.data&&e.data.size) S.chunks.push(e.data); };
+  S.mr.onstop=function(){
+    var parts=S.chunks; S.chunks=[];
+    if(!parts.length) return;
+    var type=parts[0].type||'video/mp4';
+    var blob=new Blob(parts,{type:type});
+    if(blob.size<20000) return;
+    var peak=0;
+    for(var i=0;i<S.strokes.length;i++) if(S.strokes[i].v>peak) peak=S.strokes[i].v;
+    S.clips.push({
+      url:URL.createObjectURL(blob), bytes:blob.size, ms:Date.now()-S.recT0,
+      session:sess, strokes:S.strokes.length, peak:peak,
+      ext: type.indexOf('webm')>=0 ? 'webm' : 'mp4'
+    });
+    while(S.clips.length>4){
+      var gone=S.clips.shift();
+      try{ URL.revokeObjectURL(gone.url); }catch(e){}
+    }
+    renderClips();
+  };
+  try{ S.mr.start(1000); }catch(e){ S.mr=null; }
+}
+function stopRec(){
+  try{ if(S.mr && S.mr.state!=='inactive') S.mr.stop(); }catch(e){}
+  S.mr=null;
+}
+
+function clock(ms){
+  var t=Math.round(ms/1000), m=Math.floor(t/60), sec=t%60;
+  return m+':'+(sec<10?'0':'')+sec;
+}
+
+function useFileSource(){
+  S.src='file';
+  document.getElementById('btnLive').setAttribute('aria-pressed','false');
+  stopLive(); vid.srcObject=null;
+}
+
+function loadClip(c, analyze){
+  stopTracking();
+  useFileSource();
+  vid.src=c.url; vid.loop=false;
+  vid.addEventListener('loadedmetadata', function once(){
+    vid.removeEventListener('loadedmetadata',once);
+    sizeProc(vid.videoWidth,vid.videoHeight); overlay();
+  });
+  try{ vid.currentTime=0; }catch(e){}
+  if(analyze){
+    startTracking();
+    hint.textContent='Re-analyzing session '+c.session+' \u2014 frame timestamps make these numbers the accurate ones.';
+  } else {
+    vid.play().then(function(){
+      hint.textContent='Replaying session '+c.session+'. Press Start tracking to re-analyze it.';
+    },function(){
+      hint.textContent='Tap the video to start playback.';
+    });
+  }
+}
+
+function renderClips(){
+  var box=document.getElementById('clipList');
+  box.innerHTML='';
+  if(!S.clips.length){
+    var e=document.createElement('div');
+    e.className='clip'; e.style.color='var(--muted)'; e.style.fontSize='12px';
+    e.textContent='No replays yet. Recording starts with the session and saves when you press Stop tracking.';
+    box.appendChild(e);
+    return;
+  }
+  S.clips.slice().reverse().forEach(function(c){
+    var row=document.createElement('div'); row.className='clip';
+    var meta=document.createElement('div'); meta.className='meta';
+    meta.innerHTML='Session '+c.session+' &middot; '+clock(c.ms)+
+      '<small>'+c.strokes+' strokes'+(c.peak?', peak '+c.peak+' km/h':'')+
+      ' &middot; '+(c.bytes/1048576).toFixed(1)+' MB</small>';
+    row.appendChild(meta);
+
+    var play=document.createElement('button');
+    play.textContent='Play';
+    play.addEventListener('click',function(){ loadClip(c,false); });
+    row.appendChild(play);
+
+    var an=document.createElement('button');
+    an.textContent='Re-analyze';
+    an.addEventListener('click',function(){ loadClip(c,true); });
+    row.appendChild(an);
+
+    var dl=document.createElement('a');
+    dl.className='dl'; dl.href=c.url;
+    dl.download='wall-rally-session-'+c.session+'.'+c.ext;
+    dl.textContent='Save'; dl.rel='noopener';
+    row.appendChild(dl);
+
+    var x=document.createElement('button');
+    x.className='x'; x.textContent='\u2715';
+    x.setAttribute('aria-label','Delete replay');
+    x.addEventListener('click',function(){
+      var i=S.clips.indexOf(c);
+      if(i>=0){ S.clips.splice(i,1); try{ URL.revokeObjectURL(c.url); }catch(e){} }
+      renderClips();
+    });
+    row.appendChild(x);
+
+    box.appendChild(row);
+  });
+}
+
 /* ---------- controls ---------- */
 var btnStart=document.getElementById('btnStart'), btnStop=document.getElementById('btnStop');
 function setRunUI(on){ btnStart.disabled=on; btnStop.disabled=!on; }
@@ -704,6 +853,7 @@ function clearSession(){
 function stopTracking(){
   var wasRunning=S.running;
   S.running=false; stopLoops();
+  stopRec();                                // flush the replay before dropping tracks
   if(S.src==='live') stopLive();            // release the camera completely
   else { try{ vid.pause(); }catch(e){} }
   if(wasRunning) archiveSession();
@@ -737,6 +887,7 @@ function startTracking(){
   ready.then(function(){
     S.running=true; S.tPrev=0; S.frames=0; S.vxSign=0;
     setRunUI(true); sessionBar();
+    if(S.src==='live') startRec(S.stream);
     if(S.src==='file') loopVFC(); else loopRAF();
   }).catch(function(e){
     setRunUI(false); sessionBar();
@@ -777,9 +928,18 @@ document.getElementById('fileIn').addEventListener('change', function(e){
 
 document.getElementById('btnCheck').addEventListener('click', camCheck);
 
+var btnRec=document.getElementById('btnRecToggle');
+btnRec.addEventListener('click', function(){
+  S.recOn=!S.recOn;
+  btnRec.setAttribute('aria-pressed', S.recOn?'true':'false');
+  document.getElementById('clipNote').textContent = S.recOn?'recording on':'recording off';
+  if(!S.recOn) stopRec();
+  else if(S.running && S.src==='live') startRec(S.stream);
+});
+
 document.getElementById('btnReset').addEventListener('click', function(){
   clearSession(); S.history=[]; S.session=1;
-  render(); sessionBar(); overlay();
+  render(); sessionBar(); renderClips(); overlay();
   hint.textContent='All sessions cleared.';
 });
 
@@ -831,7 +991,7 @@ draw.addEventListener('pointerdown', function(e){
 })();
 
 window.addEventListener('resize', function(){ render(); overlay(); });
-render(); sessionBar(); overlay();
+render(); sessionBar(); renderClips(); overlay();
 })();
 </script>
 </body>
