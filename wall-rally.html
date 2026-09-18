@@ -108,6 +108,7 @@
   .chk{font-size:12.5px; line-height:1.7}
   .chk.y{color:var(--ink)}
   .chk.n{color:var(--warn)}
+  .frozen{margin-top:8px; padding-top:7px; border-top:1px solid var(--line); opacity:.75}
   /* setup guide */
   .guide{padding:9px 11px 11px; margin-bottom:6px; color:var(--ink)}
   .guide summary{cursor:pointer; font-size:13px; font-weight:700; color:var(--label);
@@ -309,7 +310,8 @@ var S={
   autoWall:true, zoneLocked:false, wallHits:[], pbox:null,
   zoomCaps:null, zoomCur:0, lastZoomT:-9, fstat:{},
   voice:'off', court:false, wake:null,
-  preview:false, avgBuf:null, avgN:0, wallVisual:null, lastDetect:-9, shake:0, bright:0
+  preview:false, avgBuf:null, avgN:0, wallVisual:null, lastDetect:-9, shake:0, bright:0,
+  pconf:0, pseed:null, plastT:0, motionRatio:0, pvT0:0, lastGuide:'', lastGuideT:-9, lastGood:null
 };
 
 /* ---------- processing buffers ---------- */
@@ -383,7 +385,7 @@ function frameMasks(){
   pc.drawImage(vid,0,0,PW,PH);
   var d;
   try{ d=pc.getImageData(0,0,PW,PH).data; }catch(e){ return false; }
-  var n=PW*PH, MT=16;
+  var n=PW*PH, MT=16, mv=0;
   for(var i=0;i<n;i++){
     var k=i<<2, r=d[k], g=d[k+1], b=d[k+2];
     var gray=(r*77+g*151+b*28)>>8;
@@ -394,7 +396,9 @@ function frameMasks(){
     // tennis ball: bright yellow-green, clearly above blue, and it must be moving
     // (motion gate is what rejects the graffiti and court paint)
     ballMask[i]=(moving && g>95 && g>b+40 && r>b+20 && g>r-45)?1:0;
+    if(moving) mv++;
   }
+  S.motionRatio = mv/n;
   return true;
 }
 
@@ -539,6 +543,59 @@ function commitPending(){
   render();
 }
 
+/* ---------- person detection: shape gate + persistence, not just "biggest blob" ---------- */
+function playerCandidate(){
+  var cands=blobs(motMask,150,PW*PH,90), best=null, bs=-1;
+  for(var i=0;i<cands.length;i++){
+    var c=cands[i];
+    var h=c.y1-c.y0+1, w=c.x1-c.x0+1;
+    if(h < PH*0.16) continue;              // too short to be a standing person
+    if(h < w*0.85) continue;               // wider than tall: shadow band, glare, pan blur
+    if(h > PH*0.98 && w > PW*0.9) continue;// whole frame moved: exposure jump
+    var fill=c.n/(w*h);
+    if(fill<0.10 || fill>0.94) continue;   // scattered speckle, or a solid lighting block
+    if(S.ball && Math.abs(c.cx-S.ball.cx)<4 && Math.abs(c.cy-S.ball.cy)<4) continue;
+    var sc=c.n*(h/PH);
+    if(sc>bs){ bs=sc; best=c; }
+  }
+  return best;
+}
+
+function updatePlayer(t){
+  if(S.motionRatio>0.38){                  // the camera moved, or the light changed
+    S.pconf=Math.max(0,S.pconf-2);
+  } else {
+    var c=playerCandidate();
+    if(c){
+      var ref=S.player||S.pseed;
+      var near = !ref || (Math.abs(c.cx-ref.x)<PW*0.30 && Math.abs(c.cy-ref.y)<PH*0.40);
+      if(near){
+        S.pconf=Math.min(6,S.pconf+1);
+        S.pseed={x:c.cx,y:c.cy};
+        if(S.pconf>=3){                    // only trust it after 3 agreeing frames
+          S.player = S.player ? {x:S.player.x*.7+c.cx*.3, y:S.player.y*.7+c.cy*.3, n:c.n}
+                              : {x:c.cx, y:c.cy, n:c.n};
+          var nb={x0:c.x0,y0:c.y0,x1:c.x1,y1:c.y1};
+          S.pbox = S.pbox ? {x0:S.pbox.x0+(nb.x0-S.pbox.x0)*.35, y0:S.pbox.y0+(nb.y0-S.pbox.y0)*.35,
+                             x1:S.pbox.x1+(nb.x1-S.pbox.x1)*.35, y1:S.pbox.y1+(nb.y1-S.pbox.y1)*.35}
+                          : nb;
+          smoothFigure(figureFrom(c));
+          S.plastT=t;
+        }
+      } else {
+        S.pconf=Math.max(0,S.pconf-1);
+        if(S.pconf===0) S.pseed={x:c.cx,y:c.cy};
+      }
+    } else {
+      S.pconf=Math.max(0,S.pconf-1);
+    }
+  }
+  if(S.pconf<=0 || (S.plastT && t-S.plastT>1.2)){
+    S.player=null; S.pbox=null; S.fig=null;
+    if(S.pconf<=0) S.pseed=null;
+  }
+}
+
 /* ---------- simple body figure from the motion blob ---------- */
 function bandStats(bl,f0,f1){
   var h=bl.y1-bl.y0+1;
@@ -600,19 +657,8 @@ function step(tSec){
   var b=pickBall(bcand);
   S.ball=b;
 
-  var big=blobs(motMask,220,PW*PH,60), pl=null;
-  for(var i=0;i<big.length;i++) if(!pl||big[i].n>pl.n) pl=big[i];
-  if(pl){
-    var px=pl.cx, py=pl.cy;
-    S.player = S.player ? {x:S.player.x*0.7+px*0.3, y:S.player.y*0.7+py*0.3, n:pl.n}
-                        : {x:px,y:py,n:pl.n};
-    smoothFigure(figureFrom(pl));
-    var nb={x0:pl.x0,y0:pl.y0,x1:pl.x1,y1:pl.y1};
-    S.pbox = S.pbox ? {x0:S.pbox.x0+(nb.x0-S.pbox.x0)*.35, y0:S.pbox.y0+(nb.y0-S.pbox.y0)*.35,
-                       x1:S.pbox.x1+(nb.x1-S.pbox.x1)*.35, y1:S.pbox.y1+(nb.y1-S.pbox.y1)*.35}
-                    : nb;
-    autofocusTick(tSec);
-  }
+  updatePlayer(tSec);
+  if(S.player) autofocusTick(tSec);
   framing(tSec);
 
   if(b){
@@ -879,7 +925,7 @@ function loopRAF(){
   var t=performance.now()/1000;
   if(S.tPrev){ var dt=t-S.tPrev; S.fps=S.fps? S.fps*0.85+(1/dt)*0.15 : 1/dt; }
   S.tPrev=t;
-  if(S.preview){ previewStep(t); fpsEl.textContent='preview'; return; }
+  if(S.preview){ if(!S.pvT0) S.pvT0=t; previewStep(t); fpsEl.textContent='preview'; return; }
   step(t);
   fpsEl.textContent=Math.round(S.fps)+' fps'+(S.pxPerM?' · '+(S.pxPerM/PW*100).toFixed(0)+' px/m':'');
 }
@@ -1075,47 +1121,53 @@ function previewStep(tSec){
   S.shake = S.shake*0.8 + (moving/n)*0.2;
   S.bright = sum/n;
 
-  var big=blobs(motMask,220,n,60), pl=null;
-  for(i=0;i<big.length;i++) if(!pl||big[i].n>pl.n) pl=big[i];
-  if(pl){
-    S.player = S.player ? {x:S.player.x*.7+pl.cx*.3, y:S.player.y*.7+pl.cy*.3, n:pl.n}
-                        : {x:pl.cx,y:pl.cy,n:pl.n};
-    S.pbox = {x0:pl.x0,y0:pl.y0,x1:pl.x1,y1:pl.y1};
-    smoothFigure(figureFrom(pl));
-    autofocusTick(tSec);
-  }
+  updatePlayer(tSec);
+  if(S.player) autofocusTick(tSec);
 
   if(tSec-S.lastDetect>1.2 && S.avgN>12){ S.lastDetect=tSec; detectWallVisual(); }
-  previewChecks();
+  previewChecks(tSec);
   overlay();
 }
 
-function previewChecks(){
-  var out=[], b=S.pbox;
+function guide(txt, tSec){
+  if(!window.speechSynthesis || !S.preview) return;
+  if(tSec-S.lastGuideT < 3.5) return;
+  if(txt===S.lastGuide && tSec-S.lastGuideT < 10) return;
+  S.lastGuide=txt; S.lastGuideT=tSec;
+  try{
+    speechSynthesis.cancel();
+    var u=new SpeechSynthesisUtterance(txt);
+    u.lang='zh-CN'; u.rate=1.05;
+    speechSynthesis.speak(u);
+  }catch(e){}
+}
+
+function previewChecks(tSec){
+  var out=[], b=S.pbox, hasPerson=!!b;
 
   var hRatio = b ? (b.y1-b.y0)/PH : 0;
   var inFrame = b && b.x0>PW*0.03 && b.x1<PW*0.97 && b.y1<PH*0.99;
-  out.push(!b ? [0,'\u6ca1\u627e\u5230\u4eba \u2014 \u8d70\u8fdb\u753b\u9762\u3001\u52a8\u4e00\u4e0b']
-    : !inFrame ? [0,'\u4eba\u8d85\u51fa\u753b\u9762 \u2014 \u624b\u673a\u5f80\u540e\u79fb']
-    : hRatio>0.85 ? [0,'\u4eba\u592a\u5927 \u2014 \u624b\u673a\u518d\u9000\u4e00\u70b9']
-    : hRatio<0.18 ? [0,'\u4eba\u592a\u5c0f \u2014 \u624b\u673a\u8fd1\u4e00\u70b9']
-    : [1,'\u4eba\u5728\u753b\u9762\u5185\uff0c\u8ddd\u79bb\u5408\u9002']);
+  out.push(!b ? [0,'没看到人，走到击球位置站好']
+    : !inFrame ? [0,'人出画面了，手机往后移']
+    : hRatio>0.85 ? [0,'太近了，手机往后退']
+    : hRatio<0.18 ? [0,'太远了，手机靠近一点']
+    : [1,'人在画面内，距离合适']);
 
   var wv=S.wallVisual;
-  out.push(!wv ? [0,'\u6ca1\u8bc6\u522b\u5230\u5899 \u2014 \u8ba9\u5899与地面的交界线进画面']
-    : [1,'\u5df2\u8bc6\u522b\u5899\u9762']);
+  out.push(!wv ? [0,'没看到墙，让墙和地面的交界进画面']
+    : [1,'已识别墙面']);
 
   if(wv&&b){
     var wc=(wv.x+wv.w/2)*PW, pc=(b.x0+b.x1)/2;
     var sep=Math.abs(wc-pc)/PW;
-    var overlapWall = pc>wv.x*PW && pc<(wv.x+wv.w)*PW;
-    out.push(sep<0.18 ? [0,'\u4eba\u548c\u5899\u91cd\u53e0 \u2014 \u50cf\u662f\u6b63\u540e\u65b9\u673a\u4f4d\uff0c\u6362\u5230\u4fa7\u9762']
-      : overlapWall&&sep<0.28 ? [0,'\u89d2\u5ea6\u504f\u6b63 \u2014 \u518d\u5f80\u4fa7\u8fb9\u79fb']
-      : [1,'\u4fa7\u9762\u673a\u4f4d\uff0c\u7403\u4f1a\u6a2a\u7a7f\u753b\u9762']);
+    var inside = pc>wv.x*PW && pc<(wv.x+wv.w)*PW;
+    out.push(sep<0.18 ? [0,'人和墙重叠，像正后方机位，换到侧面']
+      : (inside&&sep<0.28) ? [0,'角度偏正，再往侧边移']
+      : [1,'侧面机位，球会横穿画面']);
   }
 
-  out.push(S.shake>0.22 ? [0,'\u753b\u9762\u5728\u6643 \u2014 \u628a\u624b\u673a\u57ab\u7a33']
-    : [1,'\u753b\u9762\u7a33\u5b9a']);
+  out.push(S.shake>0.22 ? [0,'画面在晃，把手机垫稳']
+    : [1,'画面稳定']);
 
   var pb=0;
   if(b){
@@ -1124,19 +1176,36 @@ function previewChecks(){
       for(var x=Math.max(0,b.x0|0); x<Math.min(PW,b.x1|0); x+=2){ sm+=prevGray[y*PW+x]; c++; }
     pb = c? sm/c : 0;
   }
-  out.push(S.bright<45 ? [0,'\u592a\u6697 \u2014 \u5149\u7ebf\u4e0d\u8db3']
-    : (b && pb < S.bright*0.5) ? [0,'\u53ef\u80fd\u9006\u5149 \u2014 \u8ba9\u592a\u9633\u5728\u955c\u5934\u80cc\u540e']
-    : [1,'\u5149\u7ebf\u5408\u9002']);
+  out.push(S.bright<45 ? [0,'太暗了，光线不足']
+    : (b && pb < S.bright*0.5) ? [0,'可能逆光，让太阳在镜头背后']
+    : [1,'光线合适']);
 
-  var ok=0;
+  var ok=0, firstBad=null;
   var html=out.map(function(r){
-    if(r[0]) ok++;
+    if(r[0]) ok++; else if(!firstBad) firstBad=r[1];
     return '<div class="chk '+(r[0]?'y':'n')+'">'+(r[0]?'\u2713':'!')+' '+r[1]+'</div>';
   }).join('');
-  html+='<div class="chk '+(ok===out.length?'y':'n')+'" style="margin-top:6px;font-weight:700">'+
-    (ok===out.length ? '\u673a\u4f4d\u53ef\u4ee5 \u2014 \u6309 Start tracking'
-                     : '\u8fd8\u6709 '+(out.length-ok)+' \u9879\u9700\u8981\u8c03\u6574')+'</div>';
-  document.getElementById('previewList').innerHTML=html;
+  var allOk = ok===out.length;
+  html+='<div class="chk '+(allOk?'y':'n')+'" style="margin-top:6px;font-weight:700">'+
+    (allOk ? '机位可以 — 按 Start tracking' : '还有 '+(out.length-ok)+' 项需要调整')+'</div>';
+
+  // freeze the last reading taken while someone was actually in frame,
+  // so it is still there when you walk back to the phone
+  if(hasPerson) S.lastGood={html:html, t:tSec, ok:allOk};
+
+  var panel=document.getElementById('previewList');
+  if(!hasPerson && S.lastGood){
+    panel.innerHTML = html +
+      '<div class="frozen"><div class="label" style="font-size:11.5px">有人时的检查结果 · '+
+      Math.round(tSec-S.lastGood.t)+' 秒前</div>'+S.lastGood.html+'</div>';
+  } else {
+    panel.innerHTML = html;
+  }
+
+  // spoken guidance: you are out on the court, not looking at this
+  if(tSec-S.pvT0 > 6){
+    guide(allOk ? '机位可以，按开始' : firstBad, tSec);
+  }
 }
 
 /* ---------- keeping wall, player and ball inside the frame ---------- */
@@ -1468,7 +1537,9 @@ function startPreview(){
     document.getElementById('previewPanel').hidden=false;
     document.getElementById('btnPreview').setAttribute('aria-pressed','true');
     document.getElementById('btnPreview').textContent='Stop preview';
-    hint.textContent='\u9884\u89c8\u4e2d\uff1a\u6309\u68c0\u67e5\u9879\u8c03\u673a\u4f4d\uff0c\u6ee1\u610f\u540e\u6309 Start tracking\u3002';
+    hint.textContent='预览中：走到击球位置，听语音提示调机位，满意后按 Start tracking。';
+    S.pvT0=0; S.lastGuide=''; S.lastGuideT=-9; S.lastGood=null;
+    S.pconf=0; S.pseed=null; S.player=null; S.pbox=null; S.fig=null;
     keepAwake();
     if(!rafId) loopRAF();
   }).catch(function(){});
@@ -1527,7 +1598,14 @@ function sessionBar(){
 }
 
 document.getElementById('btnPreview').addEventListener('click', function(){
-  if(S.preview) stopPreview(false); else startPreview();
+  if(S.preview){ stopPreview(false); return; }
+  try{
+    if(window.speechSynthesis){
+      var u=new SpeechSynthesisUtterance('预览开始，请走到击球位置');
+      u.lang='zh-CN'; u.rate=1.05; speechSynthesis.speak(u);
+    }
+  }catch(e){}
+  startPreview();
 });
 btnStart.addEventListener('click', startTracking);
 btnStop.addEventListener('click', stopTracking);
