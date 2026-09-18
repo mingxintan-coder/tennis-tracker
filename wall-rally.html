@@ -94,6 +94,52 @@
   .clip button, .clip a.dl{font-size:12px; padding:6px 9px; text-decoration:none}
   .clip a.dl{border:1px solid var(--line); border-radius:3px; background:var(--panel); color:var(--ink)}
   .clip button.x{color:var(--warn)}
+  body.court .cfg, body.court .tune, body.court .lower, body.court .log,
+  body.court .clips, body.court .note, body.court .sub{display:none}
+  body.court #stage{aspect-ratio:16/9; max-height:22vh}
+  body.court .cards{grid-template-columns:1fr; gap:4px}
+  body.court .card{min-height:0; padding:4px 10px 8px}
+  body.court .card.speed{order:-1}
+  body.court .card.speed .big{font-size:30vw; line-height:.95}
+  body.court .card.speed .fine{display:none}
+  body.court .card:not(.speed) .big{font-size:11vw; margin-top:0}
+  body.court .label{font-size:14px}
+  .prev{padding:9px 11px 10px; margin-bottom:6px}
+  .chk{font-size:12.5px; line-height:1.7}
+  .chk.y{color:var(--ink)}
+  .chk.n{color:var(--warn)}
+  /* setup guide */
+  .guide{padding:9px 11px 11px; margin-bottom:6px; color:var(--ink)}
+  .guide summary{cursor:pointer; font-size:13px; font-weight:700; color:var(--label);
+                 list-style:none; -webkit-tap-highlight-color:transparent}
+  .guide summary::-webkit-details-marker{display:none}
+  .guide summary::before{content:'\25B8 '; color:var(--muted)}
+  .guide[open] summary::before{content:'\25BE '}
+  .guide svg{display:block; margin:8px auto 2px; color:var(--ink); opacity:.85; max-width:320px}
+  .guide ol{margin:4px 0 0; padding-left:18px; font-size:12.5px; line-height:1.65}
+  .guide li{margin-bottom:4px}
+  .guide b{font-weight:700}
+  .guide .tip{font-size:12px; color:var(--muted); margin:8px 0 0}
+
+  /* landscape: video on the left, everything else on the right */
+  @media (orientation:landscape) and (min-width:660px){
+    body{max-width:1180px}
+    .wrap{display:flex; gap:10px; align-items:flex-start}
+    .colA{flex:0 0 48%; position:sticky; top:8px}
+    .colB{flex:1 1 52%; min-width:0}
+    #stage{aspect-ratio:16/9}
+    .cards{grid-template-columns:1fr 1fr 1.3fr}
+    .card.speed{grid-column:auto}
+    .lower{grid-template-columns:1.15fr 1fr}
+    body.court .colA{flex:0 0 38%}
+    body.court #stage{max-height:none}
+    body.court .card.speed .big{font-size:18vw}
+    body.court .card:not(.speed) .big{font-size:6.5vw}
+  }
+  /* short landscape phones: keep the video from eating the screen */
+  @media (orientation:landscape) and (max-height:480px){
+    #stage{max-height:78vh}
+  }
   .note{font-size:11.5px; color:var(--muted); margin-top:10px}
   .note b{color:var(--ink); font-weight:700}
   a{color:var(--label)}
@@ -104,14 +150,45 @@
 <h1>Wall Rally</h1>
 <p class="sub">Point the phone at yourself and the wall, prop it up, and rally.</p>
 
+<div class="wrap"><div class="colA">
 <div id="stage" class="panel">
   <video id="vid" playsinline muted></video>
   <canvas id="draw"></canvas>
   <div id="fps">idle</div>
   <div id="hint">Choose Live camera or a recorded clip, then press Start tracking.</div>
 </div>
+</div><div class="colB">
+
+<details class="panel guide" id="guide">
+  <summary>机位怎么摆 &nbsp;/&nbsp; where to put the phone</summary>
+  <svg viewBox="0 0 300 190" width="100%" height="140" aria-hidden="true">
+    <rect x="30" y="16" width="240" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.5" opacity=".8"/>
+    <text x="150" y="12" text-anchor="middle" font-size="10" fill="currentColor" opacity=".8">墙 wall</text>
+    <circle cx="150" cy="96" r="13" fill="none" stroke="currentColor" stroke-width="1.5"/>
+    <text x="150" y="100" text-anchor="middle" font-size="10" fill="currentColor">人</text>
+    <line x1="146" y1="82" x2="146" y2="32" stroke="currentColor" stroke-width="1" opacity=".55"/>
+    <line x1="154" y1="32" x2="154" y2="82" stroke="currentColor" stroke-width="1" opacity=".55"/>
+    <rect x="34" y="128" width="58" height="26" rx="4" fill="none" stroke="currentColor" stroke-width="1.5"/>
+    <text x="63" y="145" text-anchor="middle" font-size="10" fill="currentColor">手机</text>
+    <line x1="95" y1="128" x2="134" y2="106" stroke="currentColor" stroke-width="1" stroke-dasharray="3 3"/>
+    <text x="63" y="170" text-anchor="middle" font-size="9.5" fill="currentColor" opacity=".7">侧面 3–5 m · 腹高</text>
+    <text x="215" y="140" text-anchor="middle" font-size="9.5" fill="currentColor" opacity=".7">✕ 不要放正后方</text>
+    <text x="215" y="154" text-anchor="middle" font-size="9.5" fill="currentColor" opacity=".7">球朝镜头飞测不准</text>
+  </svg>
+  <ol>
+    <li><b>站侧面，不是后面。</b>手机应在你与墙连线的旁边，尽量垂直（~90°）。球要在画面里横着飞。</li>
+    <li><b>距离 3–5 米。</b>太近装不下人和墙，太远球只占几个像素。</li>
+    <li><b>高度 1–1.2 米，镜头水平。</b>三脚架、背包、长椅都行，关键是别晃——画面一抖全帧都算“运动”，识别会乱。</li>
+    <li><b>横屏。</b>画面里要同时装下：墙面下半部、你的全身、球的整条飞行线。</li>
+    <li><b>你离墙 3–5 米。</b>太近来回太快，30fps 采不到几个点。</li>
+    <li><b>太阳在镜头背后。</b>逆光时球变剪影，颜色识别会失效。</li>
+    <li><b>开始后看状态栏。</b>三项都是 ✓ 就对了；墙要打几拍回弹才会从 learning 变成 ✓。</li>
+  </ol>
+  <p class="tip">打完一组再过去看数据；开着语音就不用回头看屏幕。</p>
+</details>
 
 <div class="row">
+  <button id="btnPreview">Preview 视角</button>
   <button class="go" id="btnStart">Start tracking</button>
   <button class="halt" id="btnStop">Stop tracking</button>
   <div class="seg" role="group" aria-label="Source">
@@ -119,9 +196,11 @@
     <label class="file" tabindex="0">Open clip<input type="file" id="fileIn" accept="video/*"></label>
   </div>
   <button id="btnReset">Reset session</button>
+  <button id="btnVoice">Voice: off</button>
+  <button id="btnCourt">Court view</button>
 </div>
 
-<div class="row">
+<div class="row cfg">
   <button id="btnAutoWall" aria-pressed="true">Auto-detect wall</button>
   <button id="btnZone">Set wall zone</button>
   <div class="seg" role="group" aria-label="Wall side">
@@ -142,12 +221,16 @@
 
 <div class="panel tune" id="sessBar"><span id="sessTxt">Session 1 &middot; not started</span></div>
 
-<div class="row">
+<div class="row cfg">
   <button id="btnAF" aria-pressed="true">Auto-focus on player</button>
   <button id="btnCheck">Camera check</button>
 </div>
 <div class="panel tune"><span id="focusNote">auto-focus idle — start the camera</span></div>
 <div class="panel tune"><span id="frameNote">· wall   · player   · ball</span></div>
+<div class="panel prev" id="previewPanel" hidden>
+  <div class="label" style="margin-bottom:4px">视角检查</div>
+  <div id="previewList"></div>
+</div>
 <pre class="panel diag" id="diag" hidden></pre>
 
 <div class="cards">
@@ -198,6 +281,8 @@ backhand avg: -- km/h</div>
   ARKit <b>sceneDepth</b> instead, which removes the guesswork.
 </p>
 
+</div></div>
+
 <script>
 (function(){
 "use strict";
@@ -222,7 +307,9 @@ var S={
   recOn:true, mr:null, chunks:[], recT0:0, clips:[], recCanvas:false,
   fig:null, afOn:true, canPOI:false, caps:{},
   autoWall:true, zoneLocked:false, wallHits:[], pbox:null,
-  zoomCaps:null, zoomCur:0, lastZoomT:-9, fstat:{}
+  zoomCaps:null, zoomCur:0, lastZoomT:-9, fstat:{},
+  voice:'off', court:false, wake:null,
+  preview:false, avgBuf:null, avgN:0, wallVisual:null, lastDetect:-9, shake:0, bright:0
 };
 
 /* ---------- processing buffers ---------- */
@@ -234,6 +321,7 @@ function sizeProc(w,h){
   proc.width=PW; proc.height=PH;
   prevGray=new Uint8Array(PW*PH); ballMask=new Uint8Array(PW*PH);
   motMask=new Uint8Array(PW*PH); visited=new Uint8Array(PW*PH);
+  S.avgBuf=new Float32Array(PW*PH); S.avgN=0; S.wallVisual=null;
   S.frames=0;
   stage.classList.toggle('wide', ar>1.2);
 }
@@ -242,7 +330,7 @@ sizeProc(3,4);
 /* ---------- persistence (per-viewer convenience only) ---------- */
 function saveCfg(){
   try{ localStorage.setItem('wallrally.cfg', JSON.stringify({
-    wallSide:S.wallSide, fhSide:S.fhSide, trim:S.trim, zone:S.zone
+    wallSide:S.wallSide, fhSide:S.fhSide, trim:S.trim, zone:S.zone, voice:S.voice
   })); }catch(e){}
 }
 function loadCfg(){
@@ -252,6 +340,7 @@ function loadCfg(){
     if(c.wallSide) S.wallSide=c.wallSide;
     if(c.fhSide) S.fhSide=c.fhSide;
     if(typeof c.trim==='number') S.trim=c.trim;
+    if(c.voice) S.voice=c.voice;
     if(c.zone && typeof c.zone.w==='number') S.zone=c.zone;
   }catch(e){}
 }
@@ -446,6 +535,7 @@ function commitPending(){
   var v=kmh(p.peak);
   if(!v || v<8 || v>260) return;              // discard nonsense
   S.strokes.push({n:S.strokes.length+1, v:Math.round(v), type:p.type, hit:p.hit});
+  sayStroke(S.strokes[S.strokes.length-1]);
   render();
 }
 
@@ -561,7 +651,7 @@ function drawScene(g,W,H){
 
   // wall zone
   var z=zoneRect();
-  var learned=S.wallHits.length>=3;
+  var learned=S.wallHits.length>=3 || !!S.wallVisual;
   g.strokeStyle = learned? 'rgba(120,200,255,.9)' : 'rgba(255,255,255,.6)';
   g.lineWidth=1.5*k;
   g.setLineDash([5*k,4*k]);
@@ -571,7 +661,7 @@ function drawScene(g,W,H){
     g.fillStyle='rgba(120,200,255,.95)';
     g.font='bold '+(9.5*k)+'px '+getComputedStyle(document.body).fontFamily;
     g.textAlign='left'; g.textBaseline='bottom';
-    g.fillText('WALL', z.x*sx+3*k, z.y*sy-3*k);
+    g.fillText(S.wallHits.length>=3? 'WALL':'WALL?', z.x*sx+3*k, z.y*sy-3*k);
   }
 
   // player tracking box
@@ -785,10 +875,11 @@ function drawLog(st){
 var rafId=0, vfcId=0;
 function loopRAF(){
   rafId=requestAnimationFrame(loopRAF);
-  if(!S.running||vid.readyState<2) return;
+  if((!S.running&&!S.preview)||vid.readyState<2) return;
   var t=performance.now()/1000;
   if(S.tPrev){ var dt=t-S.tPrev; S.fps=S.fps? S.fps*0.85+(1/dt)*0.15 : 1/dt; }
   S.tPrev=t;
+  if(S.preview){ previewStep(t); fpsEl.textContent='preview'; return; }
   step(t);
   fpsEl.textContent=Math.round(S.fps)+' fps'+(S.pxPerM?' · '+(S.pxPerM/PW*100).toFixed(0)+' px/m':'');
 }
@@ -912,6 +1003,142 @@ function stopLive(){
   vid.srcObject=null;
 }
 
+/* ---------- reading the wall straight off the picture ---------- */
+function detectWallVisual(){
+  if(!S.avgBuf || S.avgN<10) return;
+  var n=PW*PH, g=new Uint8Array(n), i;
+  for(i=0;i<n;i++) g[i]=S.avgBuf[i]/S.avgN;
+
+  // a wall meets the ground in one long horizontal edge; find the rows that carry one
+  var y0=Math.round(PH*0.18), y1=Math.round(PH*0.88);
+  var counts=[], best=0;
+  for(var y=y0;y<y1;y++){
+    var c=0, mn=PW, mx=-1;
+    for(var x=2;x<PW-2;x++){
+      if(Math.abs(g[y*PW+x]-g[(y+2)*PW+x])>16){ c++; if(x<mn)mn=x; if(x>mx)mx=x; }
+    }
+    counts.push({y:y,c:c,mn:mn,mx:mx});
+    if(c>best) best=c;
+  }
+  if(best<PW*0.30){ S.wallVisual=null; return; }
+
+  // prefer the LOWEST strong edge: the wall's top edge against the sky is strong too,
+  // but the base is what separates wall from court
+  var pick=null;
+  for(i=counts.length-1;i>=0;i--){
+    if(counts[i].c>best*0.6){ pick=counts[i]; break; }
+  }
+  if(!pick){ S.wallVisual=null; return; }
+
+  // confirm: a wall is more textured than the court in front of it
+  function texture(ya,yb){
+    var sum=0,cnt=0;
+    ya=Math.max(1,Math.round(ya)); yb=Math.min(PH-2,Math.round(yb));
+    for(var y=ya;y<yb;y+=2) for(var x=2;x<PW-2;x+=2){
+      sum+=Math.abs(g[y*PW+x]-g[y*PW+x+2]); cnt++;
+    }
+    return cnt? sum/cnt : 0;
+  }
+  var span=Math.min(pick.y, PH*0.5);
+  var above=texture(pick.y-span, pick.y-2), below=texture(pick.y+3, Math.min(PH-2,pick.y+span*0.6));
+  if(above < below*0.85){ S.wallVisual=null; return; }
+
+  var wx0=Math.max(0,pick.mn), wx1=Math.min(PW,pick.mx);
+  if(wx1-wx0 < PW*0.2){ S.wallVisual=null; return; }
+  S.wallVisual={ x:wx0/PW, y:Math.max(0,pick.y-span)/PH,
+                 w:(wx1-wx0)/PW, h:span/PH };
+
+  // until real bounces arrive, the picture is the best wall estimate we have
+  if(S.autoWall && !S.zoneLocked && S.wallHits.length<3){
+    S.zone={x:S.wallVisual.x, y:S.wallVisual.y, w:S.wallVisual.w, h:S.wallVisual.h};
+    if(S.player){
+      var side=(S.wallVisual.x+S.wallVisual.w/2) < S.player.x/PW ? 'left':'right';
+      if(side!==S.wallSide){
+        S.wallSide=side;
+        document.getElementById('wallL').setAttribute('aria-pressed', side==='left'?'true':'false');
+        document.getElementById('wallR').setAttribute('aria-pressed', side==='left'?'false':'true');
+      }
+    }
+    document.getElementById('gridNote').textContent='wall from image';
+  }
+}
+
+/* ---------- viewfinder preview: check the angle before you rally ---------- */
+function previewStep(tSec){
+  if(!frameMasks()) return;
+  S.frames++;
+  if(S.frames<4) return;
+
+  var n=PW*PH, moving=0, sum=0, i;
+  for(i=0;i<n;i++){ moving+=motMask[i]; sum+=prevGray[i]; S.avgBuf[i]+=prevGray[i]; }
+  S.avgN++;
+  S.shake = S.shake*0.8 + (moving/n)*0.2;
+  S.bright = sum/n;
+
+  var big=blobs(motMask,220,n,60), pl=null;
+  for(i=0;i<big.length;i++) if(!pl||big[i].n>pl.n) pl=big[i];
+  if(pl){
+    S.player = S.player ? {x:S.player.x*.7+pl.cx*.3, y:S.player.y*.7+pl.cy*.3, n:pl.n}
+                        : {x:pl.cx,y:pl.cy,n:pl.n};
+    S.pbox = {x0:pl.x0,y0:pl.y0,x1:pl.x1,y1:pl.y1};
+    smoothFigure(figureFrom(pl));
+    autofocusTick(tSec);
+  }
+
+  if(tSec-S.lastDetect>1.2 && S.avgN>12){ S.lastDetect=tSec; detectWallVisual(); }
+  previewChecks();
+  overlay();
+}
+
+function previewChecks(){
+  var out=[], b=S.pbox;
+
+  var hRatio = b ? (b.y1-b.y0)/PH : 0;
+  var inFrame = b && b.x0>PW*0.03 && b.x1<PW*0.97 && b.y1<PH*0.99;
+  out.push(!b ? [0,'\u6ca1\u627e\u5230\u4eba \u2014 \u8d70\u8fdb\u753b\u9762\u3001\u52a8\u4e00\u4e0b']
+    : !inFrame ? [0,'\u4eba\u8d85\u51fa\u753b\u9762 \u2014 \u624b\u673a\u5f80\u540e\u79fb']
+    : hRatio>0.85 ? [0,'\u4eba\u592a\u5927 \u2014 \u624b\u673a\u518d\u9000\u4e00\u70b9']
+    : hRatio<0.18 ? [0,'\u4eba\u592a\u5c0f \u2014 \u624b\u673a\u8fd1\u4e00\u70b9']
+    : [1,'\u4eba\u5728\u753b\u9762\u5185\uff0c\u8ddd\u79bb\u5408\u9002']);
+
+  var wv=S.wallVisual;
+  out.push(!wv ? [0,'\u6ca1\u8bc6\u522b\u5230\u5899 \u2014 \u8ba9\u5899与地面的交界线进画面']
+    : [1,'\u5df2\u8bc6\u522b\u5899\u9762']);
+
+  if(wv&&b){
+    var wc=(wv.x+wv.w/2)*PW, pc=(b.x0+b.x1)/2;
+    var sep=Math.abs(wc-pc)/PW;
+    var overlapWall = pc>wv.x*PW && pc<(wv.x+wv.w)*PW;
+    out.push(sep<0.18 ? [0,'\u4eba\u548c\u5899\u91cd\u53e0 \u2014 \u50cf\u662f\u6b63\u540e\u65b9\u673a\u4f4d\uff0c\u6362\u5230\u4fa7\u9762']
+      : overlapWall&&sep<0.28 ? [0,'\u89d2\u5ea6\u504f\u6b63 \u2014 \u518d\u5f80\u4fa7\u8fb9\u79fb']
+      : [1,'\u4fa7\u9762\u673a\u4f4d\uff0c\u7403\u4f1a\u6a2a\u7a7f\u753b\u9762']);
+  }
+
+  out.push(S.shake>0.22 ? [0,'\u753b\u9762\u5728\u6643 \u2014 \u628a\u624b\u673a\u57ab\u7a33']
+    : [1,'\u753b\u9762\u7a33\u5b9a']);
+
+  var pb=0;
+  if(b){
+    var c=0,sm=0;
+    for(var y=Math.max(0,b.y0|0); y<Math.min(PH,b.y1|0); y+=2)
+      for(var x=Math.max(0,b.x0|0); x<Math.min(PW,b.x1|0); x+=2){ sm+=prevGray[y*PW+x]; c++; }
+    pb = c? sm/c : 0;
+  }
+  out.push(S.bright<45 ? [0,'\u592a\u6697 \u2014 \u5149\u7ebf\u4e0d\u8db3']
+    : (b && pb < S.bright*0.5) ? [0,'\u53ef\u80fd\u9006\u5149 \u2014 \u8ba9\u592a\u9633\u5728\u955c\u5934\u80cc\u540e']
+    : [1,'\u5149\u7ebf\u5408\u9002']);
+
+  var ok=0;
+  var html=out.map(function(r){
+    if(r[0]) ok++;
+    return '<div class="chk '+(r[0]?'y':'n')+'">'+(r[0]?'\u2713':'!')+' '+r[1]+'</div>';
+  }).join('');
+  html+='<div class="chk '+(ok===out.length?'y':'n')+'" style="margin-top:6px;font-weight:700">'+
+    (ok===out.length ? '\u673a\u4f4d\u53ef\u4ee5 \u2014 \u6309 Start tracking'
+                     : '\u8fd8\u6709 '+(out.length-ok)+' \u9879\u9700\u8981\u8c03\u6574')+'</div>';
+  document.getElementById('previewList').innerHTML=html;
+}
+
 /* ---------- keeping wall, player and ball inside the frame ---------- */
 function framing(tSec){
   var m=Math.max(3, PW*0.035), st={};
@@ -1002,6 +1229,51 @@ function autofocusTick(tSec){
   lastFocusT=tSec; lastFx=nx; lastFy=ny;
   focusAt(nx,ny);
 }
+
+/* ---------- spoken results, so you never look at the screen ---------- */
+function say(txt, force){
+  if(S.voice==='off'||!window.speechSynthesis) return;
+  try{
+    if(force) speechSynthesis.cancel();
+    else if(speechSynthesis.speaking || speechSynthesis.pending) speechSynthesis.cancel();
+    var u=new SpeechSynthesisUtterance(txt);
+    u.lang = S.voice==='zh' ? 'zh-CN' : 'en-US';
+    u.rate = 1.05; u.volume = 1;
+    speechSynthesis.speak(u);
+  }catch(e){}
+}
+function sayStroke(st){
+  if(S.voice==='off') return;
+  var type = st.type==='F' ? (S.voice==='zh'?'\u6b63\u624b':'forehand')
+           : st.type==='B' ? (S.voice==='zh'?'\u53cd\u624b':'backhand') : '';
+  say(st.v+' '+type);
+}
+function saySummary(){
+  if(S.voice==='off'||!S.strokes.length) return;
+  var peak=0,f=0,b=0;
+  for(var i=0;i<S.strokes.length;i++){
+    if(S.strokes[i].v>peak) peak=S.strokes[i].v;
+    if(S.strokes[i].type==='F') f++; else if(S.strokes[i].type==='B') b++;
+  }
+  say(S.voice==='zh'
+    ? ('\u672c\u8f6e '+S.strokes.length+' \u62cd\uff0c\u6700\u9ad8 '+peak+' \u516c\u91cc\uff0c\u6b63\u624b '+f+'\uff0c\u53cd\u624b '+b)
+    : (S.strokes.length+' strokes, peak '+peak+', '+f+' forehand, '+b+' backhand'), true);
+}
+
+/* keep the screen alive while the phone is propped up across the court */
+function keepAwake(){
+  try{
+    if(navigator.wakeLock && navigator.wakeLock.request)
+      navigator.wakeLock.request('screen').then(function(l){ S.wake=l; }, function(){});
+  }catch(e){}
+}
+function releaseAwake(){
+  try{ if(S.wake && S.wake.release) S.wake.release(); }catch(e){}
+  S.wake=null;
+}
+document.addEventListener('visibilitychange', function(){
+  if(!document.hidden && S.running && !S.wake) keepAwake();
+});
 
 /* ---------- recording ---------- */
 function recType(){
@@ -1171,11 +1443,15 @@ function clearSession(){
 
 function stopTracking(){
   var wasRunning=S.running;
+  if(S.preview){ S.preview=false; document.getElementById('previewPanel').hidden=true;
+    document.getElementById('btnPreview').setAttribute('aria-pressed','false');
+    document.getElementById('btnPreview').textContent='Preview \u89c6\u89d2'; }
   S.running=false; stopLoops();
   stopRec();                                // flush the replay before dropping tracks
   if(S.src==='live') stopLive();            // release the camera completely
   else { try{ vid.pause(); }catch(e){} }
-  if(wasRunning) archiveSession();
+  if(wasRunning){ saySummary(); archiveSession(); }
+  releaseAwake();
   S.pending=null; S.trail=[]; S.vxSign=0;
   setRunUI(false);
   fpsEl.textContent='stopped';
@@ -1183,9 +1459,34 @@ function stopTracking(){
   sessionBar(); overlay();
 }
 
+function startPreview(){
+  if(S.running) return;
+  var ready = S.stream ? Promise.resolve() : startLive();
+  ready.then(function(){
+    S.preview=true; S.tPrev=0; S.frames=0; S.avgN=0;
+    if(S.avgBuf) S.avgBuf.fill(0);
+    document.getElementById('previewPanel').hidden=false;
+    document.getElementById('btnPreview').setAttribute('aria-pressed','true');
+    document.getElementById('btnPreview').textContent='Stop preview';
+    hint.textContent='\u9884\u89c8\u4e2d\uff1a\u6309\u68c0\u67e5\u9879\u8c03\u673a\u4f4d\uff0c\u6ee1\u610f\u540e\u6309 Start tracking\u3002';
+    keepAwake();
+    if(!rafId) loopRAF();
+  }).catch(function(){});
+}
+function stopPreview(keepStream){
+  if(!S.preview) return;
+  S.preview=false;
+  if(!S.running){ stopLoops(); if(!keepStream) stopLive(); releaseAwake(); }
+  document.getElementById('previewPanel').hidden=true;
+  document.getElementById('btnPreview').setAttribute('aria-pressed','false');
+  document.getElementById('btnPreview').textContent='Preview \u89c6\u89d2';
+}
+
 function startTracking(){
   if(S.running) return;
   btnStart.disabled=true;
+  var fromPreview = S.preview && S.src==='live' && S.stream;
+  if(S.preview) stopPreview(true);
   hint.textContent='Starting\u2026';
   // every start is a fresh session: new camera stream, cleared counters
   if(S.strokes.length){ archiveSession(); S.session++; }
@@ -1193,7 +1494,9 @@ function startTracking(){
   clearSession(); render();
 
   var ready;
-  if(S.src==='live'){
+  if(fromPreview){
+    ready=Promise.resolve();                 // camera is already open and framed
+  } else if(S.src==='live'){
     stopLive();                              // drop any stale stream first
     ready=startLive();
   } else if(vid.src){
@@ -1205,7 +1508,7 @@ function startTracking(){
 
   ready.then(function(){
     S.running=true; S.tPrev=0; S.frames=0; S.vxSign=0;
-    setRunUI(true); sessionBar();
+    setRunUI(true); sessionBar(); keepAwake();
     if(S.src==='live') startRec(S.stream);
     if(S.src==='file') loopVFC(); else loopRAF();
   }).catch(function(e){
@@ -1223,6 +1526,9 @@ function sessionBar(){
   document.getElementById('sessTxt').textContent=t;
 }
 
+document.getElementById('btnPreview').addEventListener('click', function(){
+  if(S.preview) stopPreview(false); else startPreview();
+});
 btnStart.addEventListener('click', startTracking);
 btnStop.addEventListener('click', stopTracking);
 setRunUI(false);
@@ -1243,6 +1549,27 @@ document.getElementById('fileIn').addEventListener('change', function(e){
     hint.textContent=f.name+' loaded — press Start tracking.';
     overlay();
   });
+});
+
+var btnVoice=document.getElementById('btnVoice');
+btnVoice.addEventListener('click', function(){
+  if(!window.speechSynthesis){ btnVoice.textContent='Voice: unsupported'; return; }
+  S.voice = S.voice==='off' ? 'zh' : (S.voice==='zh' ? 'en' : 'off');
+  btnVoice.textContent = 'Voice: '+(S.voice==='off'?'off':(S.voice==='zh'?'\u4e2d\u6587':'English'));
+  btnVoice.setAttribute('aria-pressed', S.voice==='off'?'false':'true');
+  // iOS only unlocks speech inside a user gesture, so speak immediately
+  if(S.voice==='zh') say('\u8bed\u97f3\u5df2\u5f00', true);
+  else if(S.voice==='en') say('Voice on', true);
+  saveCfg();
+});
+
+var btnCourt=document.getElementById('btnCourt');
+btnCourt.addEventListener('click', function(){
+  S.court=!S.court;
+  document.body.classList.toggle('court', S.court);
+  btnCourt.setAttribute('aria-pressed', S.court?'true':'false');
+  btnCourt.textContent = S.court? 'Full view' : 'Court view';
+  render(); overlay();
 });
 
 var btnAF=document.getElementById('btnAF');
@@ -1344,6 +1671,9 @@ draw.addEventListener('pointerdown', function(e){
 
 /* keep buttons reflecting restored config */
 (function syncUI(){
+  var bv=document.getElementById('btnVoice');
+  bv.textContent='Voice: '+(S.voice==='off'?'off':(S.voice==='zh'?'\u4e2d\u6587':'English'));
+  bv.setAttribute('aria-pressed', S.voice==='off'?'false':'true');
   var isL=S.wallSide==='left';
   document.getElementById('wallL').setAttribute('aria-pressed',isL?'true':'false');
   document.getElementById('wallR').setAttribute('aria-pressed',isL?'false':'true');
@@ -1352,7 +1682,17 @@ draw.addEventListener('pointerdown', function(e){
   document.getElementById('fhR').setAttribute('aria-pressed',fL?'false':'true');
 })();
 
-window.addEventListener('resize', function(){ render(); overlay(); });
+function relayout(){
+  if(vid.videoWidth) sizeProc(vid.videoWidth, vid.videoHeight);
+  render(); overlay();
+}
+window.addEventListener('resize', relayout);
+window.addEventListener('orientationchange', function(){ setTimeout(relayout,350); });
+if(window.matchMedia){
+  var mq=window.matchMedia('(orientation:landscape)');
+  if(mq.addEventListener) mq.addEventListener('change', function(){ setTimeout(relayout,350); });
+}
+document.getElementById('guide').addEventListener('toggle', function(){ setTimeout(relayout,50); });
 render(); sessionBar(); renderClips(); overlay();
 })();
 </script>
