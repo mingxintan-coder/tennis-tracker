@@ -228,6 +228,7 @@
 </div>
 <div class="panel tune"><span id="focusNote">auto-focus idle — start the camera</span></div>
 <div class="panel tune"><span id="frameNote">· wall   · player   · ball</span></div>
+<div class="panel tune"><span id="poseNote">pose model: loading…</span></div>
 <div class="panel prev" id="previewPanel" hidden>
   <div class="label" style="margin-bottom:4px">视角检查</div>
   <div id="previewList"></div>
@@ -284,6 +285,8 @@ backhand avg: -- km/h</div>
 
 </div></div>
 
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection@2.1.3/dist/pose-detection.min.js"></script>
 <script>
 (function(){
 "use strict";
@@ -311,7 +314,8 @@ var S={
   zoomCaps:null, zoomCur:0, lastZoomT:-9, fstat:{},
   voice:'off', court:false, wake:null,
   preview:false, avgBuf:null, avgN:0, wallVisual:null, lastDetect:-9, shake:0, bright:0,
-  pconf:0, pseed:null, plastT:0, motionRatio:0, pvT0:0, lastGuide:'', lastGuideT:-9, lastGood:null
+  pconf:0, pseed:null, plastT:0, motionRatio:0, pvT0:0, lastGuide:'', lastGuideT:-9, lastGood:null,
+  poseOn:false, wrists:null
 };
 
 /* ---------- processing buffers ---------- */
@@ -450,8 +454,11 @@ function zoneRect(){
 }
 
 function classify(px, plx){
-  if(plx==null) return '?';
-  var dx=px-plx;
+  // with the pose model, the contact point is compared to the body centre line
+  // from the shoulders/hips rather than a motion-blob centroid
+  var ref = (S.fig && S.fig.neck && S.fig.hip) ? (S.fig.neck.x+S.fig.hip.x)/2 : plx;
+  if(ref==null) return '?';
+  var dx=px-ref;
   if(Math.abs(dx)<PW*0.015) return '?';
   var leftIsF = S.fhSide==='left';
   return ((dx<0)===leftIsF) ? 'F' : 'B';
@@ -543,6 +550,99 @@ function commitPending(){
   render();
 }
 
+/* ---------- pose model: a real skeleton beats any motion heuristic ---------- */
+var poseDet=null, poseBusy=false, poseLast=null, poseT=-9, poseReq=-9;
+function poseNote(t){ var e=document.getElementById('poseNote'); if(e) e.textContent=t; }
+
+function initPose(){
+  if(!window.tf || !window.poseDetection){
+    poseNote('pose model unavailable \u2014 motion fallback'); return;
+  }
+  poseNote('pose model: loading\u2026');
+  try{
+    window.tf.ready().then(function(){
+      return window.poseDetection.createDetector(
+        window.poseDetection.SupportedModels.MoveNet,
+        {modelType: window.poseDetection.movenet.modelConfigs.SINGLEPOSE_LIGHTNING});
+    }).then(function(d){
+      poseDet=d; S.poseOn=true;
+      poseNote('pose model: on (MoveNet) \u2014 \u9aa8\u67b6\u8bc6\u522b');
+    }).catch(function(){
+      poseNote('pose model failed to load \u2014 motion fallback');
+    });
+  }catch(e){ poseNote('pose model unavailable \u2014 motion fallback'); }
+}
+
+function posePump(t){
+  if(!poseDet||poseBusy||vid.readyState<2) return;
+  if(t-poseReq<0.08) return;                 // ~12 Hz is plenty for a body
+  poseReq=t; poseBusy=true;
+  poseDet.estimatePoses(vid,{maxPoses:1,flipHorizontal:false}).then(function(ps){
+    poseBusy=false;
+    poseLast=(ps&&ps.length)?ps[0]:null;
+    poseT=performance.now()/1000;
+  }).catch(function(){ poseBusy=false; });
+}
+
+function figureFromPose(p){
+  if(!p||!p.keypoints||!vid.videoWidth) return null;
+  var kx=PW/vid.videoWidth, ky=PH/vid.videoHeight, map={};
+  for(var i=0;i<p.keypoints.length;i++){
+    var k=p.keypoints[i];
+    if(k.score>0.32) map[k.name]={x:k.x*kx, y:k.y*ky};
+  }
+  var have=0; for(var n in map) have++;
+  if(have<5) return null;
+
+  function mid(a,b){
+    if(map[a]&&map[b]) return {x:(map[a].x+map[b].x)/2, y:(map[a].y+map[b].y)/2};
+    return map[a]||map[b]||null;
+  }
+  var sMid=mid('left_shoulder','right_shoulder'), hMid=mid('left_hip','right_hip');
+  if(!sMid) return null;
+  if(!hMid) hMid={x:sMid.x, y:sMid.y+PH*0.18};
+
+  var sw = (map.left_shoulder&&map.right_shoulder)
+    ? Math.abs(map.left_shoulder.x-map.right_shoulder.x) : PW*0.06;
+  var headPt = map.nose || mid('left_ear','right_ear') || {x:sMid.x, y:sMid.y-sw*0.9};
+
+  var fig={
+    head:{x:headPt.x, y:headPt.y, r:Math.max(2.5, sw*0.42)},
+    neck:sMid, hip:hMid,
+    sL:map.left_shoulder||sMid, sR:map.right_shoulder||sMid,
+    eL:map.left_elbow||null,   eR:map.right_elbow||null,
+    hL:map.left_wrist||null,   hR:map.right_wrist||null,
+    kL:map.left_knee||null,    kR:map.right_knee||null,
+    fL:map.left_ankle||null,   fR:map.right_ankle||null
+  };
+  fig._pts=map;
+  return fig;
+}
+
+function updatePlayerPose(t){
+  if(!poseLast || t-poseT>1.2){                 // model went quiet: person left or stalled
+    if(S.poseOn && t-poseT>1.2){ S.player=null; S.pbox=null; S.fig=null; S.wrists=null; }
+    return true;
+  }
+  var fig=figureFromPose(poseLast);
+  if(!fig){ S.player=null; S.pbox=null; S.fig=null; S.wrists=null; return true; }
+
+  smoothFigure(fig);
+  S.player = S.player ? {x:S.player.x*.6+fig.hip.x*.4, y:S.player.y*.6+fig.hip.y*.4, n:0}
+                      : {x:fig.hip.x, y:fig.hip.y, n:0};
+  var xs=[], ys=[];
+  for(var n in fig._pts){ xs.push(fig._pts[n].x); ys.push(fig._pts[n].y); }
+  var nb={x0:Math.min.apply(null,xs), x1:Math.max.apply(null,xs),
+          y0:Math.min.apply(null,ys), y1:Math.max.apply(null,ys)};
+  nb.y0=Math.max(0, nb.y0-(nb.y1-nb.y0)*0.12);   // head sits above the topmost keypoint
+  S.pbox = S.pbox ? {x0:S.pbox.x0+(nb.x0-S.pbox.x0)*.4, y0:S.pbox.y0+(nb.y0-S.pbox.y0)*.4,
+                     x1:S.pbox.x1+(nb.x1-S.pbox.x1)*.4, y1:S.pbox.y1+(nb.y1-S.pbox.y1)*.4}
+                  : nb;
+  S.wrists={L:fig.hL, R:fig.hR};
+  S.plastT=t; S.pconf=6;
+  return true;
+}
+
 /* ---------- person detection: shape gate + persistence, not just "biggest blob" ---------- */
 function playerCandidate(){
   var cands=blobs(motMask,150,PW*PH,90), best=null, bs=-1;
@@ -562,6 +662,7 @@ function playerCandidate(){
 }
 
 function updatePlayer(t){
+  if(poseDet && S.poseOn){ posePump(t); if(updatePlayerPose(t)) return; }
   if(S.motionRatio>0.38){                  // the camera moved, or the light changed
     S.pconf=Math.max(0,S.pconf-2);
   } else {
@@ -639,11 +740,13 @@ function lerpPt(a,b,k){ return {x:a.x+(b.x-a.x)*k, y:a.y+(b.y-a.y)*k, r:(a.r!=nu
 function smoothFigure(f){
   if(!f){ return; }
   if(!S.fig){ S.fig=f; return; }
-  var keys=['head','neck','hip','sL','sR','hL','hR','fL','fR'], out={};
+  var keys=['head','neck','hip','sL','sR','eL','eR','hL','hR','kL','kR','fL','fR'], out={};
   for(var i=0;i<keys.length;i++){
     var k=keys[i];
+    if(!f[k]){ out[k]=null; continue; }
     out[k]= S.fig[k] ? lerpPt(S.fig[k], f[k], 0.45) : f[k];
   }
+  out._pts=f._pts;
   S.fig=out;
 }
 
@@ -724,7 +827,8 @@ function drawScene(g,W,H){
   var f=S.fig;
   if(f){
     var seg=[[f.head,f.neck],[f.neck,f.hip],[f.sL,f.sR],
-             [f.sL,f.hL],[f.sR,f.hR],[f.hip,f.fL],[f.hip,f.fR]];
+             [f.sL,f.eL||f.hL],[f.eL,f.hL],[f.sR,f.eR||f.hR],[f.eR,f.hR],
+             [f.hip,f.kL||f.fL],[f.kL,f.fL],[f.hip,f.kR||f.fR],[f.kR,f.fR]];
     for(var pass=0; pass<2; pass++){
       g.strokeStyle = pass? 'rgba(255,255,255,.95)' : 'rgba(0,0,0,.45)';
       g.lineWidth = (pass? 2.2 : 4.4)*k;
@@ -736,13 +840,16 @@ function drawScene(g,W,H){
         g.moveTo(a.x*sx, a.y*sy); g.lineTo(b.x*sx, b.y*sy);
       }
       g.stroke();
-      g.beginPath();
-      g.arc(f.head.x*sx, f.head.y*sy, Math.max(4*k, f.head.r*sx), 0, 6.2832);
-      g.stroke();
+      if(f.head){
+        g.beginPath();
+        g.arc(f.head.x*sx, f.head.y*sy, Math.max(4*k, (f.head.r||4)*sx), 0, 6.2832);
+        g.stroke();
+      }
     }
     // hands marked, since forehand/backhand is read from contact side
     g.fillStyle='rgba(255,255,255,.9)';
     [f.hL,f.hR].forEach(function(p){
+      if(!p) return;
       g.beginPath(); g.arc(p.x*sx, p.y*sy, 2.6*k, 0, 6.2832); g.fill();
     });
   }
@@ -1147,11 +1254,12 @@ function previewChecks(tSec){
 
   var hRatio = b ? (b.y1-b.y0)/PH : 0;
   var inFrame = b && b.x0>PW*0.03 && b.x1<PW*0.97 && b.y1<PH*0.99;
-  out.push(!b ? [0,'没看到人，走到击球位置站好']
+  var how = S.poseOn ? '（姿态模型）' : '（运动识别）';
+  out.push(!b ? [0,'没看到人'+how+'，走到击球位置站好']
     : !inFrame ? [0,'人出画面了，手机往后移']
     : hRatio>0.85 ? [0,'太近了，手机往后退']
     : hRatio<0.18 ? [0,'太远了，手机靠近一点']
-    : [1,'人在画面内，距离合适']);
+    : [1,'人在画面内，距离合适'+how]);
 
   var wv=S.wallVisual;
   out.push(!wv ? [0,'没看到墙，让墙和地面的交界进画面']
@@ -1672,7 +1780,8 @@ btnRec.addEventListener('click', function(){
 
 document.getElementById('btnReset').addEventListener('click', function(){
   clearSession(); S.history=[]; S.session=1;
-  render(); sessionBar(); renderClips(); overlay();
+  initPose();
+render(); sessionBar(); renderClips(); overlay();
   hint.textContent='All sessions cleared.';
 });
 
@@ -1771,6 +1880,7 @@ if(window.matchMedia){
   if(mq.addEventListener) mq.addEventListener('change', function(){ setTimeout(relayout,350); });
 }
 document.getElementById('guide').addEventListener('toggle', function(){ setTimeout(relayout,50); });
+initPose();
 render(); sessionBar(); renderClips(); overlay();
 })();
 </script>
