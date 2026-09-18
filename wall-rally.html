@@ -30,6 +30,7 @@
     max-width:820px; margin:0 auto;
   }
   h1{font-size:17px; font-weight:700; letter-spacing:-.01em; margin:2px 0 2px}
+  #ver{font-size:11px; font-weight:400; color:var(--muted); margin-left:4px}
   .sub{color:var(--muted); font-size:12px; margin:0 0 10px}
   .panel{background:var(--panel); border:1px solid var(--line); border-radius:3px}
   .label{color:var(--label); font-size:12.5px; font-weight:700}
@@ -148,7 +149,7 @@
 </head>
 <body>
 
-<h1>Wall Rally</h1>
+<h1>Wall Rally <span id="ver">v0.9.0</span></h1>
 <p class="sub">Point the phone at yourself and the wall, prop it up, and rally.</p>
 
 <div class="wrap"><div class="colA">
@@ -285,11 +286,12 @@ backhand avg: -- km/h</div>
 
 </div></div>
 
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection@2.1.3/dist/pose-detection.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/pose.js" crossorigin="anonymous"></script>
 <script>
 (function(){
 "use strict";
+
+var VERSION='0.9.0', BUILT='2026-09-18';
 
 /* ---------- elements ---------- */
 var vid=document.getElementById('vid'), draw=document.getElementById('draw'),
@@ -551,81 +553,115 @@ function commitPending(){
 }
 
 /* ---------- pose model: a real skeleton beats any motion heuristic ---------- */
-var poseDet=null, poseBusy=false, poseLast=null, poseT=-9, poseReq=-9;
+var POSE_CDN='https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404/';
+var poseSol=null, poseBusy=false, poseLast=null, poseT=-9, poseReq=-9, poseScore=0, poseNoteT=-9;
+var POSE_IDX=[0,11,12,13,14,15,16,23,24,25,26,27,28];
+
 function poseNote(t){ var e=document.getElementById('poseNote'); if(e) e.textContent=t; }
 
 function initPose(){
-  if(!window.tf || !window.poseDetection){
-    poseNote('pose model unavailable \u2014 motion fallback'); return;
-  }
+  if(!window.Pose){ poseNote('pose model unavailable \u2014 motion fallback'); return; }
   poseNote('pose model: loading\u2026');
   try{
-    window.tf.ready().then(function(){
-      return window.poseDetection.createDetector(
-        window.poseDetection.SupportedModels.MoveNet,
-        {modelType: window.poseDetection.movenet.modelConfigs.SINGLEPOSE_LIGHTNING});
-    }).then(function(d){
-      poseDet=d; S.poseOn=true;
-      poseNote('pose model: on (MoveNet) \u2014 \u9aa8\u67b6\u8bc6\u522b');
+    poseSol=new window.Pose({locateFile:function(f){ return POSE_CDN+f; }});
+    poseSol.setOptions({
+      modelComplexity:0, smoothLandmarks:true, enableSegmentation:false,
+      minDetectionConfidence:0.6, minTrackingConfidence:0.6
+    });
+    poseSol.onResults(function(res){
+      poseBusy=false;
+      poseT=performance.now()/1000;
+      var lm = res && res.poseLandmarks;
+      if(!lm){ poseLast=null; poseScore=0; return; }
+      var sum=0, c=0;
+      for(var i=0;i<POSE_IDX.length;i++){
+        var q=lm[POSE_IDX[i]];
+        if(q && typeof q.visibility==='number'){ sum+=q.visibility; c++; }
+      }
+      poseScore = c ? sum/c : 0;
+      // the model reports landmarks even for a weak guess — demand real confidence
+      poseLast = poseScore>=0.55 ? lm : null;
+    });
+    poseSol.initialize().then(function(){
+      S.poseOn=true;
+      poseNote('pose model: on (MediaPipe) \u2014 \u9aa8\u67b6\u8bc6\u522b');
     }).catch(function(){
+      poseSol=null; S.poseOn=false;
       poseNote('pose model failed to load \u2014 motion fallback');
     });
-  }catch(e){ poseNote('pose model unavailable \u2014 motion fallback'); }
+  }catch(e){
+    poseSol=null; S.poseOn=false;
+    poseNote('pose model unavailable \u2014 motion fallback');
+  }
 }
 
 function posePump(t){
-  if(!poseDet||poseBusy||vid.readyState<2) return;
-  if(t-poseReq<0.08) return;                 // ~12 Hz is plenty for a body
+  if(!poseSol||!S.poseOn||poseBusy||vid.readyState<2) return;
+  if(t-poseReq<0.09) return;                     // ~11 Hz
   poseReq=t; poseBusy=true;
-  poseDet.estimatePoses(vid,{maxPoses:1,flipHorizontal:false}).then(function(ps){
-    poseBusy=false;
-    poseLast=(ps&&ps.length)?ps[0]:null;
-    poseT=performance.now()/1000;
-  }).catch(function(){ poseBusy=false; });
+  try{
+    var r=poseSol.send({image:vid});
+    if(r&&r.catch) r.catch(function(){ poseBusy=false; });
+  }catch(e){ poseBusy=false; }
 }
 
-function figureFromPose(p){
-  if(!p||!p.keypoints||!vid.videoWidth) return null;
-  var kx=PW/vid.videoWidth, ky=PH/vid.videoHeight, map={};
-  for(var i=0;i<p.keypoints.length;i++){
-    var k=p.keypoints[i];
-    if(k.score>0.32) map[k.name]={x:k.x*kx, y:k.y*ky};
+function lmPt(lm,i,minVis){
+  var q=lm[i];
+  if(!q) return null;
+  if(typeof q.visibility==='number' && q.visibility < (minVis||0.5)) return null;
+  return {x:q.x*PW, y:q.y*PH};
+}
+
+function figureFromPose(lm){
+  var pts={}, names={0:'nose',11:'sL',12:'sR',13:'eL',14:'eR',15:'hL',16:'hR',
+                     23:'pL',24:'pR',25:'kL',26:'kR',27:'fL',28:'fR'};
+  var have=0;
+  for(var i in names){
+    var p=lmPt(lm, +i, 0.5);
+    if(p){ pts[names[i]]=p; have++; }
   }
-  var have=0; for(var n in map) have++;
-  if(have<5) return null;
+  if(have<6) return null;                        // not enough of a body to believe
 
   function mid(a,b){
-    if(map[a]&&map[b]) return {x:(map[a].x+map[b].x)/2, y:(map[a].y+map[b].y)/2};
-    return map[a]||map[b]||null;
+    if(pts[a]&&pts[b]) return {x:(pts[a].x+pts[b].x)/2, y:(pts[a].y+pts[b].y)/2};
+    return pts[a]||pts[b]||null;
   }
-  var sMid=mid('left_shoulder','right_shoulder'), hMid=mid('left_hip','right_hip');
-  if(!sMid) return null;
-  if(!hMid) hMid={x:sMid.x, y:sMid.y+PH*0.18};
+  var sMid=mid('sL','sR'), hMid=mid('pL','pR');
+  if(!sMid||!hMid) return null;                  // no torso, no person
 
-  var sw = (map.left_shoulder&&map.right_shoulder)
-    ? Math.abs(map.left_shoulder.x-map.right_shoulder.x) : PW*0.06;
-  var headPt = map.nose || mid('left_ear','right_ear') || {x:sMid.x, y:sMid.y-sw*0.9};
+  var sw = (pts.sL&&pts.sR) ? Math.abs(pts.sL.x-pts.sR.x) : PW*0.06;
+  var head = pts.nose || {x:sMid.x, y:sMid.y-sw*0.9};
 
   var fig={
-    head:{x:headPt.x, y:headPt.y, r:Math.max(2.5, sw*0.42)},
+    head:{x:head.x, y:head.y, r:Math.max(2.5, sw*0.45)},
     neck:sMid, hip:hMid,
-    sL:map.left_shoulder||sMid, sR:map.right_shoulder||sMid,
-    eL:map.left_elbow||null,   eR:map.right_elbow||null,
-    hL:map.left_wrist||null,   hR:map.right_wrist||null,
-    kL:map.left_knee||null,    kR:map.right_knee||null,
-    fL:map.left_ankle||null,   fR:map.right_ankle||null
+    sL:pts.sL||sMid, sR:pts.sR||sMid,
+    eL:pts.eL||null, eR:pts.eR||null,
+    hL:pts.hL||null, hR:pts.hR||null,
+    kL:pts.kL||null, kR:pts.kR||null,
+    fL:pts.fL||null, fR:pts.fR||null
   };
-  fig._pts=map;
+  fig._pts=pts;
   return fig;
 }
 
+function clearPerson(){
+  S.player=null; S.pbox=null; S.fig=null; S.wrists=null; S.pconf=0; S.pseed=null;
+}
+
 function updatePlayerPose(t){
-  if(!poseLast || t-poseT>1.2){                 // model went quiet: person left or stalled
-    if(S.poseOn && t-poseT>1.2){ S.player=null; S.pbox=null; S.fig=null; S.wrists=null; }
+  // no landmarks, or a stale result: there is nobody there, and nothing should linger
+  if(!poseLast || t-poseT>0.8){
+    if(S.player||S.fig) clearPerson();
+    if(t-poseNoteT>0.6){
+      poseNoteT=t;
+      poseNote('pose: on \u00b7 ' + (poseScore>0 ? '\u672a\u68c0\u6d4b\u5230\u4eba ('+poseScore.toFixed(2)+')'
+                                                 : '\u672a\u68c0\u6d4b\u5230\u4eba'));
+    }
     return true;
   }
   var fig=figureFromPose(poseLast);
-  if(!fig){ S.player=null; S.pbox=null; S.fig=null; S.wrists=null; return true; }
+  if(!fig){ clearPerson(); return true; }
 
   smoothFigure(fig);
   S.player = S.player ? {x:S.player.x*.6+fig.hip.x*.4, y:S.player.y*.6+fig.hip.y*.4, n:0}
@@ -634,12 +670,16 @@ function updatePlayerPose(t){
   for(var n in fig._pts){ xs.push(fig._pts[n].x); ys.push(fig._pts[n].y); }
   var nb={x0:Math.min.apply(null,xs), x1:Math.max.apply(null,xs),
           y0:Math.min.apply(null,ys), y1:Math.max.apply(null,ys)};
-  nb.y0=Math.max(0, nb.y0-(nb.y1-nb.y0)*0.12);   // head sits above the topmost keypoint
+  nb.y0=Math.max(0, nb.y0-(nb.y1-nb.y0)*0.10);
   S.pbox = S.pbox ? {x0:S.pbox.x0+(nb.x0-S.pbox.x0)*.4, y0:S.pbox.y0+(nb.y0-S.pbox.y0)*.4,
                      x1:S.pbox.x1+(nb.x1-S.pbox.x1)*.4, y1:S.pbox.y1+(nb.y1-S.pbox.y1)*.4}
                   : nb;
   S.wrists={L:fig.hL, R:fig.hR};
   S.plastT=t; S.pconf=6;
+  if(t-poseNoteT>0.6){
+    poseNoteT=t;
+    poseNote('pose: on \u00b7 \u4eba \u2713 ('+poseScore.toFixed(2)+')');
+  }
   return true;
 }
 
@@ -662,7 +702,7 @@ function playerCandidate(){
 }
 
 function updatePlayer(t){
-  if(poseDet && S.poseOn){ posePump(t); if(updatePlayerPose(t)) return; }
+  if(poseSol && S.poseOn){ posePump(t); if(updatePlayerPose(t)) return; }
   if(S.motionRatio>0.38){                  // the camera moved, or the light changed
     S.pconf=Math.max(0,S.pconf-2);
   } else {
@@ -692,7 +732,7 @@ function updatePlayer(t){
     }
   }
   if(S.pconf<=0 || (S.plastT && t-S.plastT>1.2)){
-    S.player=null; S.pbox=null; S.fig=null;
+    S.player=null; S.pbox=null; S.fig=null; S.wrists=null;
     if(S.pconf<=0) S.pseed=null;
   }
 }
@@ -1780,7 +1820,10 @@ btnRec.addEventListener('click', function(){
 
 document.getElementById('btnReset').addEventListener('click', function(){
   clearSession(); S.history=[]; S.session=1;
-  initPose();
+  document.getElementById('ver').textContent='v'+VERSION+' \u00b7 '+BUILT;
+try{ console.log('Wall Rally v'+VERSION+' ('+BUILT+')'); }catch(e){}
+
+initPose();
 render(); sessionBar(); renderClips(); overlay();
   hint.textContent='All sessions cleared.';
 });
@@ -1880,6 +1923,9 @@ if(window.matchMedia){
   if(mq.addEventListener) mq.addEventListener('change', function(){ setTimeout(relayout,350); });
 }
 document.getElementById('guide').addEventListener('toggle', function(){ setTimeout(relayout,50); });
+document.getElementById('ver').textContent='v'+VERSION+' \u00b7 '+BUILT;
+try{ console.log('Wall Rally v'+VERSION+' ('+BUILT+')'); }catch(e){}
+
 initPose();
 render(); sessionBar(); renderClips(); overlay();
 })();
