@@ -162,7 +162,7 @@
 </head>
 <body>
 
-<h1>Wall Rally <span id="ver">v0.11.0</span></h1>
+<h1>Wall Rally <span id="ver">v0.12.0</span></h1>
 <p class="sub">Point the phone at yourself and the wall, prop it up, and rally.</p>
 
 <div class="wrap"><div class="colA">
@@ -239,6 +239,7 @@
 
 <div class="row cfg">
   <button id="btnAF" aria-pressed="true">Auto-focus on player</button>
+  <button id="btnBallDbg">球识别调试</button>
   <button id="btnCheck">Camera check</button>
 </div>
 <div class="panel tune"><span id="focusNote">auto-focus idle — start the camera</span></div>
@@ -321,7 +322,7 @@ backhand avg: -- km/h</div>
 (function(){
 "use strict";
 
-var VERSION='0.11.0', BUILT='2026-09-21';
+var VERSION='0.12.0', BUILT='2026-09-21';
 
 /* ---------- elements ---------- */
 var vid=document.getElementById('vid'), draw=document.getElementById('draw'),
@@ -348,7 +349,8 @@ var S={
   preview:false, avgBuf:null, avgN:0, wallVisual:null, lastDetect:-9, shake:0, bright:0,
   pconf:0, pseed:null, plastT:0, motionRatio:0, pvT0:0, lastGuide:'', lastGuideT:-9, lastGood:null,
   poseOn:false, wrists:null, coach:true, clock:0,
-  handL:0, handR:0, ballDia:0, rejFoot:0, rejSize:0, ballSeen:0
+  handL:0, handR:0, ballDia:0, rejFoot:0, rejSize:0, ballSeen:0,
+  ballDbg:false, cands:[]
 };
 
 /* ---------- processing buffers ---------- */
@@ -431,9 +433,17 @@ function frameMasks(){
     prevGray[i]=gray;
     var moving=diff>MT?1:0;
     motMask[i]=moving;
-    // tennis ball: bright yellow-green, clearly above blue, and it must be moving
-    // (motion gate is what rejects the graffiti and court paint)
-    ballMask[i]=(moving && g>95 && g>b+40 && r>b+20 && g>r-45)?1:0;
+    // Optic yellow, tested against real RGB rather than eyeballed thresholds.
+    // The two conditions that matter: g>=r-15 rejects everything reddish (skin,
+    // clay, orange), and r>g*0.70 rejects everything purely green (foliage,
+    // court paint). The old gate allowed r to exceed g by 45, which is exactly
+    // the skin and clay region - that is why hands were being detected.
+    // Thresholds are loose enough to survive the desaturation of motion blur.
+    var mx = r>g ? (r>b?r:b) : (g>b?g:b);
+    var mn = r<g ? (r<b?r:b) : (g<b?g:b);
+    var sat = mx>0 ? (mx-mn)/mx : 0;
+    ballMask[i]=(moving && mx>105 && b===mn && sat>0.30 &&
+                 g>=r-15 && r>g*0.70 && g>b+45)?1:0;
     if(moving) mv++;
   }
   S.motionRatio = mv/n;
@@ -454,10 +464,17 @@ function expectedDia(){
 function nearBody(cx,cy){
   var f=S.fig; if(!f) return false;
   var span=(f.sL&&f.sR)? Math.abs(f.sL.x-f.sR.x) : PW*0.06;
-  var rFoot=Math.max(PW*0.035, span*0.75);     // shoe + ankle
-  var rKnee=Math.max(PW*0.030, span*0.60);
-  var rHead=Math.max(PW*0.030, span*0.60);
-  var pts=[[f.fL,rFoot],[f.fR,rFoot],[f.kL,rKnee],[f.kR,rKnee],[f.head,rHead]];
+  var R=function(k){ return Math.max(PW*0.028, span*k); };
+  // Hands get a tighter radius than feet: the ball legitimately arrives next to
+  // the racket hand at contact, and the trajectory rescue below lets it through
+  // when we were already tracking a ball flying into that spot.
+  var pts=[[f.fL,R(0.75)],[f.fR,R(0.75)],     // ankles, the worst offenders
+           [f.kL,R(0.60)],[f.kR,R(0.60)],     // knees
+           [f.head,R(0.60)],
+           [f.hL,R(0.45)],[f.hR,R(0.45)],     // wrists
+           [f.eL,R(0.45)],[f.eR,R(0.45)],     // elbows
+           [f.sL,R(0.50)],[f.sR,R(0.50)],
+           [f.hip,R(0.55)]];
   for(var i=0;i<pts.length;i++){
     var q=pts[i][0]; if(!q) continue;
     if(Math.hypot(cx-q.x, cy-q.y) < pts[i][1]) return true;
@@ -509,6 +526,7 @@ function pickBall(cands){
     }
     if(s>bs){bs=s;best=c;}
   }
+  if(S.ballDbg) S.cands=cands.slice(0,40);
   if(best){
     var d=(best.w+best.h)/2;
     S.ballDia = S.ballDia ? S.ballDia*0.9+d*0.1 : d;
@@ -1285,11 +1303,44 @@ function drawScene(g,W,H){
   g.restore();
 }
 
+var mcv=document.createElement('canvas'), mcx=mcv.getContext('2d');
+function drawBallMask(g,W,H){
+  if(!ballMask) return;
+  var r=fitRect(W,H);
+  if(mcv.width!==PW||mcv.height!==PH){ mcv.width=PW; mcv.height=PH; }
+  var img=mcx.createImageData(PW,PH), d=img.data;
+  for(var i=0;i<PW*PH;i++){
+    var k=i<<2;
+    if(ballMask[i]){ d[k]=255; d[k+1]=0; d[k+2]=220; d[k+3]=190; }
+    else d[k+3]=0;
+  }
+  mcx.putImageData(img,0,0);
+  g.save();
+  g.imageSmoothingEnabled=false;
+  g.drawImage(mcv, r.x, r.y, r.w, r.h);
+  // ring every candidate that survived the filters, labelled with its diameter
+  var sx=r.w/PW, sy=r.h/PH;
+  g.translate(r.x,r.y);
+  g.font='bold 10px '+getComputedStyle(document.body).fontFamily;
+  g.textAlign='center'; g.textBaseline='bottom';
+  for(var j=0;j<S.cands.length;j++){
+    var c=S.cands[j], dia=(c.w+c.h)/2;
+    var rejected = nearBody(c.cx,c.cy) || c.n>200 || dia>18 || c.circ<0.30;
+    g.strokeStyle = rejected ? 'rgba(255,90,40,.95)' : 'rgba(80,255,140,.95)';
+    g.lineWidth=1.5;
+    g.beginPath(); g.arc(c.cx*sx, c.cy*sy, Math.max(6,dia*sx*0.9), 0, 6.2832); g.stroke();
+    g.fillStyle=g.strokeStyle;
+    g.fillText(dia.toFixed(0), c.cx*sx, c.cy*sy-8);
+  }
+  g.restore();
+}
+
 function overlay(){
   var W=draw.clientWidth, H=draw.clientHeight, dpr=Math.min(2,window.devicePixelRatio||1);
   if(draw.width!==Math.round(W*dpr)){ draw.width=Math.round(W*dpr); draw.height=Math.round(H*dpr); }
   dctx.setTransform(dpr,0,0,dpr,0,0);
   dctx.clearRect(0,0,W,H);
+  if(S.ballDbg) drawBallMask(dctx,W,H);
   drawScene(dctx,W,H);
   if(S.setZone){
     var fr=fitRect(W,H);
@@ -2247,6 +2298,17 @@ btnAF.addEventListener('click', function(){
   if(!S.stream){ focusNote(S.afOn?'auto-focus idle \u2014 start the camera':'auto-focus off'); return; }
   if(S.afOn){ lastFx=-1; lastFy=-1; initFocus(); }
   else focusNote(S.canPOI? 'auto-focus off \u2014 tap the video to focus' : 'auto-focus off');
+});
+
+var btnBD=document.getElementById('btnBallDbg');
+btnBD.addEventListener('click', function(){
+  S.ballDbg=!S.ballDbg;
+  btnBD.setAttribute('aria-pressed', S.ballDbg?'true':'false');
+  if(!S.ballDbg) S.cands=[];
+  hint.textContent = S.ballDbg
+    ? '\u7d2b\u8272 = \u901a\u8fc7\u989c\u8272\u5224\u636e\u7684\u50cf\u7d20\uff1b\u7eff\u5708 = \u88ab\u63a5\u53d7\u7684\u5019\u9009\uff0c\u7ea2\u5708 = \u88ab\u5426\u51b3\uff0c\u6570\u5b57\u662f\u76f4\u5f84\u50cf\u7d20\u3002'
+    : '\u8c03\u8bd5\u89c6\u56fe\u5df2\u5173\u3002';
+  overlay();
 });
 
 document.getElementById('btnCheck').addEventListener('click', camCheck);
