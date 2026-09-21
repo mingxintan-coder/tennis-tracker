@@ -162,7 +162,7 @@
 </head>
 <body>
 
-<h1>Wall Rally <span id="ver">v0.10.0</span></h1>
+<h1>Wall Rally <span id="ver">v0.11.0</span></h1>
 <p class="sub">Point the phone at yourself and the wall, prop it up, and rally.</p>
 
 <div class="wrap"><div class="colA">
@@ -321,7 +321,7 @@ backhand avg: -- km/h</div>
 (function(){
 "use strict";
 
-var VERSION='0.10.0', BUILT='2026-09-21';
+var VERSION='0.11.0', BUILT='2026-09-21';
 
 /* ---------- elements ---------- */
 var vid=document.getElementById('vid'), draw=document.getElementById('draw'),
@@ -347,7 +347,8 @@ var S={
   voice:'off', court:false, wake:null,
   preview:false, avgBuf:null, avgN:0, wallVisual:null, lastDetect:-9, shake:0, bright:0,
   pconf:0, pseed:null, plastT:0, motionRatio:0, pvT0:0, lastGuide:'', lastGuideT:-9, lastGood:null,
-  poseOn:false, wrists:null, coach:true, clock:0
+  poseOn:false, wrists:null, coach:true, clock:0,
+  handL:0, handR:0, ballDia:0, rejFoot:0, rejSize:0, ballSeen:0
 };
 
 /* ---------- processing buffers ---------- */
@@ -439,22 +440,79 @@ function frameMasks(){
   return true;
 }
 
+/* A tennis ball is 6.7 cm. Once the scale is known the expected size in
+   processing pixels is arithmetic, not a guess. */
+function expectedDia(){
+  if(S.pxPerM) return Math.max(2, Math.min(18, 0.067*S.pxPerM));
+  return S.ballDia || 0;                       // learned from earlier accepted balls
+}
+
+/* Feet, knees and head throw the strongest motion blobs on the whole court,
+   which is why they kept winning the ball search. The skeleton says where
+   they are, so exclude them outright. Hands are deliberately NOT excluded:
+   at contact the ball really is right next to the racket hand. */
+function nearBody(cx,cy){
+  var f=S.fig; if(!f) return false;
+  var span=(f.sL&&f.sR)? Math.abs(f.sL.x-f.sR.x) : PW*0.06;
+  var rFoot=Math.max(PW*0.035, span*0.75);     // shoe + ankle
+  var rKnee=Math.max(PW*0.030, span*0.60);
+  var rHead=Math.max(PW*0.030, span*0.60);
+  var pts=[[f.fL,rFoot],[f.fR,rFoot],[f.kL,rKnee],[f.kR,rKnee],[f.head,rHead]];
+  for(var i=0;i<pts.length;i++){
+    var q=pts[i][0]; if(!q) continue;
+    if(Math.hypot(cx-q.x, cy-q.y) < pts[i][1]) return true;
+  }
+  return false;
+}
+
 function pickBall(cands){
   var best=null,bs=-1;
-  var pred=null, tr=S.trail;
+  var pred=null, tr=S.trail, lastP=null, lastT=0;
+  if(tr.length>=1){ lastP=tr[tr.length-1]; lastT=lastP.t; }
   if(tr.length>=2){
     var a=tr[tr.length-2], b=tr[tr.length-1], dt=b.t-a.t;
     if(dt>0&&dt<0.2) pred={x:b.x+(b.x-a.x), y:b.y+(b.y-a.y)};
   }
+  var exp=expectedDia();
   for(var i=0;i<cands.length;i++){
     var c=cands[i];
-    if(c.n<2||c.n>420) continue;
-    var s=c.circ*2 + Math.min(c.n,90)/90;
+    var dia=(c.w+c.h)/2;
+    if(c.n<2 || c.n>200 || dia>18){ S.rejSize++; continue; }
+    if(c.circ<0.30) continue;                  // a ball is round; a shoe edge is not
+    if(nearBody(c.cx,c.cy)){
+      var rescued = pred && Math.hypot(c.cx-pred.x, c.cy-pred.y) < PW*0.06;
+      if(!rescued){ S.rejFoot++; continue; }
+    }
+
+    // score by how close the blob is to the size a ball should be, not by bulk
+    var sz;
+    if(exp){
+      var err=Math.abs(dia-exp)/exp;
+      if(err>1.1) continue;                    // nothing like a ball
+      sz=Math.max(0, 1-err);
+    } else {
+      sz=dia<=10 ? 1-Math.abs(dia-5)/8 : 0.15; // no scale yet: favour small blobs
+    }
+    var s=c.circ*1.6 + sz*2.2;
+
     if(pred){
       var dd=Math.hypot(c.cx-pred.x,c.cy-pred.y);
       s+=Math.max(0,2.2-dd/(PW*0.12));
+    } else if(lastP){
+      // no prediction yet, but a ball that has not moved since the last frame
+      // is almost certainly something attached to the court or the player
+      var gap=S.clock-lastT;
+      if(gap>0 && gap<0.2){
+        var move=Math.hypot(c.cx-lastP.x, c.cy-lastP.y)/gap;
+        if(move < PW*0.25) s-=1.2;
+      }
     }
     if(s>bs){bs=s;best=c;}
+  }
+  if(best){
+    var d=(best.w+best.h)/2;
+    S.ballDia = S.ballDia ? S.ballDia*0.9+d*0.1 : d;
+    S.ballSeen++;
   }
   return best;
 }
@@ -486,15 +544,71 @@ function zoneRect(){
   return {x:z.x*PW, y:z.y*PH, w:z.w*PW, h:z.h*PH};
 }
 
+/* Which hand holds the racket: whichever wrist has done more travelling.
+   Accumulated across the session, so it settles within a few strokes. */
+var prevW=null;
+function trackHand(){
+  var f=S.fig; if(!f) { prevW=null; return; }
+  if(prevW){
+    if(f.hL&&prevW.L) S.handL=S.handL*0.99+Math.hypot(f.hL.x-prevW.L.x, f.hL.y-prevW.L.y);
+    if(f.hR&&prevW.R) S.handR=S.handR*0.99+Math.hypot(f.hR.x-prevW.R.x, f.hR.y-prevW.R.y);
+  }
+  prevW={L:f.hL?{x:f.hL.x,y:f.hL.y}:null, R:f.hR?{x:f.hR.x,y:f.hR.y}:null};
+}
+function hittingWrist(){
+  var f=S.fig; if(!f) return null;
+  if(!f.hL) return f.hR||null;
+  if(!f.hR) return f.hL;
+  if(S.handL+S.handR < 1) return null;         // not enough evidence yet
+  return S.handL>S.handR ? f.hL : f.hR;
+}
+
+/* Forehand vs backhand is decided by which side of the torso the stroke comes
+   from. The racket wrist marks that far more reliably than the ball does: the
+   ball is a few pixels and may be mid-flight, while the wrist is a tracked
+   joint sitting exactly where the swing is. The ball only breaks ties. */
 function classify(px, plx){
-  // with the pose model, the contact point is compared to the body centre line
-  // from the shoulders/hips rather than a motion-blob centroid
-  var ref = (S.fig && S.fig.neck && S.fig.hip) ? (S.fig.neck.x+S.fig.hip.x)/2 : plx;
+  var f=S.fig;
+  var ref = (f && f.neck && f.hip) ? (f.neck.x+f.hip.x)/2 : plx;
   if(ref==null) return '?';
-  var dx=px-ref;
-  if(Math.abs(dx)<PW*0.015) return '?';
+  var span = (f && f.sL && f.sR) ? Math.max(PW*0.03, Math.abs(f.sL.x-f.sR.x)) : PW*0.06;
+
+  var vote=0, weight=0;
+
+  var w=hittingWrist();
+  if(w){
+    var dw=(w.x-ref)/span;
+    if(Math.abs(dw)>0.20){
+      vote += (dw>0?1:-1)*Math.min(1, Math.abs(dw)/1.0) * 2.5;
+      weight += 2.5;
+    }
+  }
+
+  if(px!=null){
+    var db=(px-ref)/span;
+    if(Math.abs(db)>0.30){
+      vote += (db>0?1:-1)*Math.min(1, Math.abs(db)/1.5);
+      weight += 1;
+    }
+  }
+
+  // both hands on the grip is a backhand tell for most players
+  if(f && f.hL && f.hR && weight>0){
+    var apart=Math.hypot(f.hL.x-f.hR.x, f.hL.y-f.hR.y)/span;
+    if(apart<0.55){
+      var backSign = S.fhSide==='left' ? 1 : -1;   // the side that is NOT forehand
+      vote += backSign*0.8; weight += 0.8;
+    }
+  }
+
+  // with a skeleton we can demand corroboration; without one the ball is all
+  // there is, and a best guess beats calling every stroke unclear
+  var need = (f && f.neck) ? 1.5 : 0.9;
+  if(weight<need) return '?';
+  var v=vote/weight;
+  if(Math.abs(v)<0.22) return '?';
   var leftIsF = S.fhSide==='left';
-  return ((dx<0)===leftIsF) ? 'F' : 'B';
+  return ((v<0)===leftIsF) ? 'F' : 'B';
 }
 
 function onReversal(ev){
@@ -1042,6 +1156,7 @@ function step(tSec){
   S.ball=b;
 
   updatePlayer(tSec);
+  trackHand();
   if(S.player) autofocusTick(tSec);
   framing(tSec);
 
@@ -1685,7 +1800,10 @@ function framing(tSec){
   var el=document.getElementById('frameNote');
   if(el){
     var bad = (st.player&&!st.playerIn) || (st.wall&&!st.wallIn);
-    el.textContent = msg.join('   ') + (bad? '   \u2014 something is at the frame edge' : '');
+    var dia=expectedDia();
+    var extra=' \u00b7 ball '+(dia?dia.toFixed(1)+'px':'?')+
+              ' \u00b7 rej '+S.rejFoot+'\u8db3/'+S.rejSize+'\u5c3a';
+    el.textContent = msg.join('   ') + extra + (bad? '   \u2014 something is at the frame edge' : '');
     el.style.color = bad? 'var(--warn)' : 'var(--muted)';
   }
   if((st.player&&!st.playerIn) || (st.wall&&!st.wallIn)) zoomOut(tSec);
@@ -1969,6 +2087,8 @@ function archiveSession(){
 function clearSession(){
   S.strokes=[]; S.pending=null; S.trail=[]; S.player=null; S.fig=null;
   S.wallHits=[]; S.pbox=null; S.fstat={}; POSE_BUF.length=0;
+  S.handL=0; S.handR=0; S.ballDia=0; prevW=null;
+  S.rejFoot=0; S.rejSize=0; S.ballSeen=0;
   S.pxPerM=0; S.vxSign=0; S.lastEventT=-9; S.fps=0; S.frames=0; S.tPrev=0;
 }
 
@@ -2142,11 +2262,7 @@ btnRec.addEventListener('click', function(){
 
 document.getElementById('btnReset').addEventListener('click', function(){
   clearSession(); S.history=[]; S.session=1;
-  document.getElementById('ver').textContent='v'+VERSION+' \u00b7 '+BUILT;
-try{ console.log('Wall Rally v'+VERSION+' ('+BUILT+')'); }catch(e){}
-
-initPose();
-render(); sessionBar(); renderClips(); overlay();
+  render(); sessionBar(); renderClips(); overlay();
   hint.textContent='All sessions cleared.';
 });
 
