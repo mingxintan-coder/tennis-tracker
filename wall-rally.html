@@ -142,6 +142,19 @@
   @media (orientation:landscape) and (max-height:480px){
     #stage{max-height:78vh}
   }
+  .tech{margin-top:6px}
+  .tbar{display:grid; grid-template-columns:52px 1fr 60px; gap:8px;
+        align-items:center; margin-top:7px; font-size:12px}
+  .tbar .tn{color:var(--muted)}
+  .tbar .tv{color:var(--muted); text-align:right; font-size:11.5px}
+  .tmeter{height:7px; background:var(--line); border-radius:2px; overflow:hidden}
+  .tmeter i{display:block; height:100%; background:var(--bar)}
+  .tmeter i.warn{background:var(--warn)}
+  .tnote{font-size:12px; color:var(--warn); margin-top:9px; line-height:1.6}
+  .tnote b{color:var(--ink)}
+  .tscore{font-size:34px; font-weight:700; letter-spacing:-.02em; line-height:1}
+  .tscore small{font-size:12px; font-weight:400; color:var(--muted); margin-left:5px}
+  body.court .tech{display:none}
   .note{font-size:11.5px; color:var(--muted); margin-top:10px}
   .note b{color:var(--ink); font-weight:700}
   a{color:var(--label)}
@@ -149,7 +162,7 @@
 </head>
 <body>
 
-<h1>Wall Rally <span id="ver">v0.9.0</span></h1>
+<h1>Wall Rally <span id="ver">v0.10.0</span></h1>
 <p class="sub">Point the phone at yourself and the wall, prop it up, and rally.</p>
 
 <div class="wrap"><div class="colA">
@@ -199,6 +212,7 @@
   </div>
   <button id="btnReset">Reset session</button>
   <button id="btnVoice">Voice: off</button>
+  <button id="btnCoach" aria-pressed="true">Coach: on</button>
   <button id="btnCourt">Court view</button>
 </div>
 
@@ -259,9 +273,17 @@ backhand avg: -- km/h</div>
   </div>
 </div>
 
+<div class="cell panel tech" id="techPanel">
+  <div class="cellhead">
+    <span class="label">技术评分 &nbsp;technique</span>
+    <em id="techAvg">no strokes yet</em>
+  </div>
+  <div id="techBody"></div>
+</div>
+
 <div class="log panel">
   <table>
-    <thead><tr><th>#</th><th>type</th><th>km/h</th><th>placement</th></tr></thead>
+    <thead><tr><th>#</th><th>type</th><th>km/h</th><th>分</th><th>placement</th></tr></thead>
     <tbody id="logBody"><tr><td colspan="4">No strokes yet.</td></tr></tbody>
   </table>
 </div>
@@ -278,6 +300,14 @@ backhand avg: -- km/h</div>
 </div>
 
 <p class="note">
+  <b>评分依据。</b>每拍得分是拿你的骨架数据对照
+  <b>精英选手的动捕研究数据</b>算出来的，不是拍脑袋定的阈值：
+  肩髋分离角 27–33°（Landlinger 等，<i>J Sports Sci Med</i>），
+  髋→躯干→肩→腕的近远端依次发力序列，
+  前挥时长约 0.33 秒。侧面机位才能看准这些角度。
+</p>
+
+<p class="note">
   <b>How speed is measured here.</b> The browser has no access to LiDAR, so the prototype
   converts pixels to metres from the ball's apparent width (a ball is 6.7 cm across) and smooths it.
   Use Scale trim if readings run high or low against a known shot. The native build reads
@@ -291,7 +321,7 @@ backhand avg: -- km/h</div>
 (function(){
 "use strict";
 
-var VERSION='0.9.0', BUILT='2026-09-18';
+var VERSION='0.10.0', BUILT='2026-09-21';
 
 /* ---------- elements ---------- */
 var vid=document.getElementById('vid'), draw=document.getElementById('draw'),
@@ -317,7 +347,7 @@ var S={
   voice:'off', court:false, wake:null,
   preview:false, avgBuf:null, avgN:0, wallVisual:null, lastDetect:-9, shake:0, bright:0,
   pconf:0, pseed:null, plastT:0, motionRatio:0, pvT0:0, lastGuide:'', lastGuideT:-9, lastGood:null,
-  poseOn:false, wrists:null
+  poseOn:false, wrists:null, coach:true, clock:0
 };
 
 /* ---------- processing buffers ---------- */
@@ -338,7 +368,7 @@ sizeProc(3,4);
 /* ---------- persistence (per-viewer convenience only) ---------- */
 function saveCfg(){
   try{ localStorage.setItem('wallrally.cfg', JSON.stringify({
-    wallSide:S.wallSide, fhSide:S.fhSide, trim:S.trim, zone:S.zone, voice:S.voice
+    wallSide:S.wallSide, fhSide:S.fhSide, trim:S.trim, zone:S.zone, voice:S.voice, coach:S.coach
   })); }catch(e){}
 }
 function loadCfg(){
@@ -349,6 +379,7 @@ function loadCfg(){
     if(c.fhSide) S.fhSide=c.fhSide;
     if(typeof c.trim==='number') S.trim=c.trim;
     if(c.voice) S.voice=c.voice;
+    if(typeof c.coach==='boolean') S.coach=c.coach;
     if(c.zone && typeof c.zone.w==='number') S.zone=c.zone;
   }catch(e){}
 }
@@ -547,8 +578,10 @@ function commitPending(){
   if(!p) return;
   var v=kmh(p.peak);
   if(!v || v<8 || v>260) return;              // discard nonsense
-  S.strokes.push({n:S.strokes.length+1, v:Math.round(v), type:p.type, hit:p.hit});
-  sayStroke(S.strokes[S.strokes.length-1]);
+  var st={n:S.strokes.length+1, v:Math.round(v), type:p.type, hit:p.hit};
+  if(S.poseOn) st.tech=analyzeStroke(p.t, p);
+  S.strokes.push(st);
+  sayStroke(st);
   render();
 }
 
@@ -570,7 +603,7 @@ function initPose(){
     });
     poseSol.onResults(function(res){
       poseBusy=false;
-      poseT=performance.now()/1000;
+      poseT=S.clock;
       var lm = res && res.poseLandmarks;
       if(!lm){ poseLast=null; poseScore=0; return; }
       var sum=0, c=0;
@@ -581,6 +614,7 @@ function initPose(){
       poseScore = c ? sum/c : 0;
       // the model reports landmarks even for a weak guess — demand real confidence
       poseLast = poseScore>=0.55 ? lm : null;
+      if(poseLast) pushPoseFrame(poseLast, poseT);
     });
     poseSol.initialize().then(function(){
       S.poseOn=true;
@@ -597,7 +631,7 @@ function initPose(){
 
 function posePump(t){
   if(!poseSol||!S.poseOn||poseBusy||vid.readyState<2) return;
-  if(t-poseReq<0.09) return;                     // ~11 Hz
+  if(t-poseReq<0.045) return;                    // ~22 Hz: technique needs finer time than tracking
   poseReq=t; poseBusy=true;
   try{
     var r=poseSol.send({image:vid});
@@ -681,6 +715,213 @@ function updatePlayerPose(t){
     poseNote('pose: on \u00b7 \u4eba \u2713 ('+poseScore.toFixed(2)+')');
   }
   return true;
+}
+
+/* ---------- stroke technique: measured against published elite kinematics ----------
+   Benchmarks come from motion-capture studies of elite players (JSSM, Landlinger et al.):
+   shoulder-hip separation ~27-33 deg at preparation, proximal-to-distal sequencing
+   (pelvis peaks ~75 ms before impact, trunk ~57 ms, shoulder ~45 ms), forward swing ~0.33 s. */
+var POSE_BUF=[], POSE_BUF_MAX=90;               // ~4 s at 22 Hz
+
+function pushPoseFrame(lm,t){
+  function g(i){
+    var q=lm[i];
+    return (q && (typeof q.visibility!=='number' || q.visibility>0.4))
+      ? {x:q.x, y:q.y, z:(typeof q.z==='number'?q.z:0)} : null;
+  }
+  POSE_BUF.push({t:t, sL:g(11), sR:g(12), wL:g(15), wR:g(16),
+                 hL:g(23), hR:g(24), kL:g(25), kR:g(26), aL:g(27), aR:g(28), nose:g(0)});
+  if(POSE_BUF.length>POSE_BUF_MAX) POSE_BUF.shift();
+}
+
+function segAngle(a,b){                          // rotation of a body line, seen from above
+  if(!a||!b) return null;
+  return Math.atan2(a.z-b.z, a.x-b.x)*180/Math.PI;
+}
+function angDiff(a,b){
+  var d=a-b;
+  while(d>180) d-=360;
+  while(d<-180) d+=360;
+  return d;
+}
+function jointAngle(a,b,c){                      // interior angle at b, in the image plane
+  if(!a||!b||!c) return null;
+  var v1x=a.x-b.x, v1y=a.y-b.y, v2x=c.x-b.x, v2y=c.y-b.y;
+  var n1=Math.hypot(v1x,v1y), n2=Math.hypot(v2x,v2y);
+  if(n1<1e-6||n2<1e-6) return null;
+  var cs=(v1x*v2x+v1y*v2y)/(n1*n2);
+  return Math.acos(Math.max(-1,Math.min(1,cs)))*180/Math.PI;
+}
+function shoulderSpan(f){
+  if(!f||!f.sL||!f.sR) return null;
+  var w=Math.hypot(f.sL.x-f.sR.x, f.sL.y-f.sR.y);
+  return w>0.02 ? w : 0.12;                      // side-on the span collapses; floor it
+}
+function band(v, lo, hi, soft){                  // 1 inside [lo,hi], easing to 0 over `soft`
+  if(v==null) return null;
+  if(v>=lo && v<=hi) return 1;
+  var d = v<lo ? lo-v : v-hi;
+  return Math.max(0, 1-d/soft);
+}
+
+function analyzeStroke(ct, pend){
+  if(POSE_BUF.length<8) return null;
+  var pre=[], post=[], all=[];
+  for(var i=0;i<POSE_BUF.length;i++){
+    var f=POSE_BUF[i], dt=f.t-ct;
+    if(dt>=-0.70 && dt<=0.45){ all.push(f); if(dt<=0.02) pre.push(f); else post.push(f); }
+  }
+  if(pre.length<4) return null;
+  var at=pre[pre.length-1];                      // the frame at contact
+  var span=shoulderSpan(at) || 0.12;
+  var parts={}, notes=[];
+
+  /* --- coil: shoulder-hip separation, plus hips-before-shoulders ordering --- */
+  var sepPeak=0, sAng=[], hAng=[];
+  for(i=0;i<pre.length;i++){
+    var sa=segAngle(pre[i].sL,pre[i].sR), ha=segAngle(pre[i].hL,pre[i].hR);
+    sAng.push(sa); hAng.push(ha);
+    if(sa!=null&&ha!=null){
+      var sep=Math.abs(angDiff(sa,ha));
+      if(sep>90) sep=180-sep;                    // the line is undirected
+      if(sep>sepPeak) sepPeak=sep;
+    }
+  }
+  var coil=band(sepPeak, 24, 42, 22);
+  var seq=null;
+  if(pre.length>=6){
+    var hv=-1,hvi=-1, sv=-1,svi=-1;
+    for(i=1;i<pre.length;i++){
+      var dt2=pre[i].t-pre[i-1].t; if(dt2<=0) continue;
+      if(hAng[i]!=null&&hAng[i-1]!=null){
+        var q=Math.abs(angDiff(hAng[i],hAng[i-1]))/dt2; if(q>hv){hv=q;hvi=i;}
+      }
+      if(sAng[i]!=null&&sAng[i-1]!=null){
+        var r=Math.abs(angDiff(sAng[i],sAng[i-1]))/dt2; if(r>sv){sv=r;svi=i;}
+      }
+    }
+    if(hvi>0&&svi>0) seq = hvi<=svi;             // hips lead the shoulders through
+  }
+  var coilScore = coil==null ? null : coil*20 + (seq===true?5:(seq===false?0:2.5));
+  parts.coil={s:coilScore, max:25, label:'\u8f6c\u4f53', val:Math.round(sepPeak)+'\u00b0',
+    note: sepPeak<20 ? '\u4e0a\u4e0b\u8eab\u5206\u79bb\u4e0d\u591f\uff0c\u53ea\u7528\u624b\u81c2\u62c9\u7403'
+        : sepPeak>46 ? '\u8f6c\u4f53\u8fc7\u5ea6\uff0c\u5bb9\u6613\u5931\u53bb\u63a7\u5236'
+        : seq===false ? '\u5206\u79bb\u591f\uff0c\u4f46\u80a9\u6bd4\u9acb\u5148\u8f6c'
+        : '\u8f6c\u4f53\u5145\u5206' };
+
+  /* --- preparation: how far the shoulders turned away before coming through --- */
+  var mn=999,mx=-999;
+  for(i=0;i<sAng.length;i++) if(sAng[i]!=null){
+    var rel=angDiff(sAng[i], sAng[sAng.length-1]);
+    if(rel<mn)mn=rel; if(rel>mx)mx=rel;
+  }
+  var turn = (mx>-999&&mn<999) ? (mx-mn) : null;
+  parts.prep={s: turn==null?null:band(turn,35,110,35)*15, max:15, label:'\u5f15\u62cd',
+    val: turn==null?'--':Math.round(turn)+'\u00b0',
+    note: turn==null ? '\u6570\u636e\u4e0d\u8db3'
+        : turn<30 ? '\u5f15\u62cd\u592a\u5c0f\uff0c\u8eab\u4f53\u6ca1\u6709\u5148\u8f6c\u5f00'
+        : turn>120 ? '\u5f15\u62cd\u8fc7\u5927\uff0c\u6765\u4e0d\u53ca\u56de\u4f4d'
+        : '\u5f15\u62cd\u5230\u4f4d' };
+
+  /* --- contact point: ahead of the hips, between hip and shoulder height --- */
+  var cp=null, ch=null;
+  if(pend && pend.x!=null && at.hL && at.hR){
+    var hipX=(at.hL.x+at.hR.x)/2*PW, hipY=(at.hL.y+at.hR.y)/2*PH;
+    var shY=(at.sL&&at.sR)?((at.sL.y+at.sR.y)/2*PH):(hipY-PH*0.18);
+    var toWall = S.wallSide==='left' ? -1 : 1;
+    cp = ((pend.x-hipX)*toWall)/(span*PW);       // shoulder-widths in front
+    ch = (hipY-pend.y)/Math.max(1,(hipY-shY));   // 0 = hip height, 1 = shoulder height
+  }
+  var cpS = cp==null?null:band(cp,0.35,1.3,0.55)*13;
+  var chS = ch==null?null:band(ch,0.05,1.05,0.55)*7;
+  parts.contact={s:(cpS==null?null:cpS+(chS||0)), max:20, label:'\u51fb\u7403\u70b9',
+    val: cp==null?'--':cp.toFixed(2)+'\u4f53\u5bbd',
+    note: cp==null ? '\u672a\u6355\u83b7\u5230\u51fb\u7403\u70b9'
+        : cp<0.25 ? '\u51fb\u7403\u70b9\u592a\u9760\u540e\uff0c\u88ab\u7403\u9876\u4f4f\u4e86'
+        : cp>1.4 ? '\u4f38\u5f97\u592a\u524d\uff0c\u53d1\u529b\u4e0d\u96c6\u4e2d'
+        : (ch!=null&&ch<0) ? '\u51fb\u7403\u70b9\u504f\u4f4e\uff0c\u4f4e\u4e8e\u9acb\u90e8'
+        : '\u51fb\u7403\u70b9\u5728\u8eab\u4f53\u524d\u65b9' };
+
+  /* --- legs: bent and extending through the ball, not locked straight --- */
+  function kneeOf(f){
+    var a=jointAngle(f.hL,f.kL,f.aL), b=jointAngle(f.hR,f.kR,f.aR);
+    if(a==null) return b; if(b==null) return a;
+    return Math.min(a,b);                        // the loaded leg is the bent one
+  }
+  var kC=kneeOf(at), kMin=999;
+  for(i=0;i<pre.length;i++){ var kk=kneeOf(pre[i]); if(kk!=null&&kk<kMin) kMin=kk; }
+  var drive = (kC!=null&&kMin<999) ? (kC-kMin) : null;
+  var kS=null;
+  if(kC!=null){
+    var kq = kC<138 ? Math.max(0, 1-(138-kC)/26)   // over-squatted: recoverable
+           : kC>168 ? Math.max(0, 1-(kC-168)/11)   // locked out: little left to give
+           : 1;
+    kS = kq*11;
+  }
+  var dS = drive==null?null:Math.min(4, Math.max(0,drive)/6);
+  parts.legs={s:(kC==null?null:kS+(dS||0)), max:15, label:'\u817f\u90e8',
+    val: kC==null?'--':Math.round(kC)+'\u00b0',
+    note: kC==null ? '\u817f\u90e8\u5173\u8282\u672a\u8bc6\u522b'
+        : kC>176 ? '\u53cc\u817f\u9501\u6b7b\uff0c\u6ca1\u6709\u8e6c\u5730\u53d1\u529b'
+        : kC<130 ? '\u91cd\u5fc3\u538b\u5f97\u592a\u4f4e\uff0c\u8d77\u4e0d\u6765'
+        : (drive!=null&&drive<4) ? '\u6709\u5c48\u819d\u4f46\u6ca1\u8e6c\u76f4\uff0c\u817f\u529b\u6ca1\u4f20\u4e0a\u53bb'
+        : '\u8e6c\u5730\u53d1\u529b\u5230\u4f4d' };
+
+  /* --- finish: the hitting wrist keeps travelling, and finishes high --- */
+  var fin=null, high=null;
+  if(post.length>=3){
+    var lastP=post[post.length-1];
+    function trav(k){
+      var a0=at[k], a1=lastP[k];
+      return (a0&&a1)? Math.hypot(a1.x-a0.x,a1.y-a0.y)/span : null;
+    }
+    var tL=trav('wL'), tR=trav('wR');
+    var useL = (tL!=null&&(tR==null||tL>tR));    // the racket hand is the one that travels
+    fin = useL? tL : tR;
+    var wEnd = useL? lastP.wL : lastP.wR;
+    if(wEnd && lastP.sL && lastP.sR) high=((lastP.sL.y+lastP.sR.y)/2 - wEnd.y)/span;
+  }
+  var fS = fin==null?null:band(fin,1.1,3.2,0.9)*10;
+  var hS = high==null?null:band(high,-0.2,1.6,0.6)*5;
+  parts.finish={s:(fin==null?null:fS+(hS||0)), max:15, label:'\u968f\u6325',
+    val: fin==null?'--':fin.toFixed(1)+'\u4f53\u5bbd',
+    note: fin==null ? '\u968f\u6325\u6bb5\u6ca1\u62cd\u5230'
+        : fin<0.9 ? '\u968f\u6325\u592a\u77ed\uff0c\u51fb\u7403\u540e\u5c31\u505c\u4f4f\u4e86'
+        : (high!=null&&high<-0.3) ? '\u968f\u6325\u504f\u4f4e\uff0c\u4e0a\u65cb\u4e0d\u591f'
+        : '\u968f\u6325\u5145\u5206' };
+
+  /* --- balance: elite players keep the head remarkably still through contact --- */
+  var drift=null, hs=[];
+  for(i=0;i<all.length;i++)
+    if(all[i].nose && Math.abs(all[i].t-ct)<=0.22) hs.push(all[i].nose);
+  if(hs.length>=3){
+    var mxa=0, mya=0;
+    for(i=0;i<hs.length;i++){ mxa+=hs[i].x; mya+=hs[i].y; }
+    mxa/=hs.length; mya/=hs.length;
+    var far=0;
+    for(i=0;i<hs.length;i++){
+      var d=Math.hypot(hs[i].x-mxa, hs[i].y-mya);
+      if(d>far) far=d;
+    }
+    drift=far*2/span;                            // full excursion, in shoulder-widths
+  }
+  parts.balance={s: drift==null?null:band(drift,0,0.45,0.5)*10, max:10, label:'\u5e73\u8861',
+    val: drift==null?'--':drift.toFixed(2),
+    note: drift==null ? '\u5934\u90e8\u672a\u8bc6\u522b'
+        : drift>0.7 ? '\u51fb\u7403\u65f6\u5934\u5728\u52a8\uff0c\u91cd\u5fc3\u4e0d\u7a33'
+        : '\u91cd\u5fc3\u7a33\u5b9a' };
+
+  var got=0, tot=0, weakest=null, wg=-1;
+  for(var k in parts){
+    var q=parts[k];
+    if(q.s==null) continue;
+    got+=q.s; tot+=q.max;
+    var gap=(q.max-q.s)/q.max;
+    if(gap>wg){ wg=gap; weakest=q; }
+  }
+  if(tot<40) return null;                        // too little of the body seen to judge
+  var score=Math.round(got/tot*100);
+  return {score:score, parts:parts, weakest:weakest, covered:Math.round(tot)};
 }
 
 /* ---------- person detection: shape gate + persistence, not just "biggest blob" ---------- */
@@ -979,7 +1220,7 @@ function render(){
     'backhand avg: '+(bk?Math.round(bs/bk):'--')+' km/h';
   document.getElementById('plotMax').textContent='max '+(peak||'--')+' km/h';
 
-  drawPlot(st,peak); drawGrid(st); drawLog(st);
+  drawPlot(st,peak); drawGrid(st); drawTech(st); drawLog(st);
 }
 
 function drawPlot(st,peak){
@@ -1052,14 +1293,78 @@ function drawGrid(st){
   });
 }
 
+function drawTech(st){
+  var body=document.getElementById('techBody'), avgEl=document.getElementById('techAvg');
+  var scored=[];
+  for(var i=0;i<st.length;i++) if(st[i].tech) scored.push(st[i]);
+
+  if(!scored.length){
+    avgEl.textContent = S.poseOn? 'no strokes yet' : 'needs the pose model';
+    body.innerHTML='<div class="tnote" style="color:var(--muted)">'+
+      (S.poseOn ? '\u6253\u51e0\u62cd\u540e\u8fd9\u91cc\u4f1a\u9010\u62cd\u6253\u5206\u3002'
+                : '\u6280\u672f\u8bc4\u5206\u9700\u8981\u59ff\u6001\u6a21\u578b\uff0c\u5f53\u524d\u672a\u52a0\u8f7d\u3002')+'</div>';
+    return;
+  }
+
+  // average each component across the session, so one bad shot does not set the agenda
+  var keys=['coil','prep','contact','legs','finish','balance'], acc={}, tot=0, n=0;
+  for(i=0;i<scored.length;i++){
+    tot+=scored[i].tech.score; n++;
+    for(var j=0;j<keys.length;j++){
+      var q=scored[i].tech.parts[keys[j]];
+      if(!q||q.s==null) continue;
+      if(!acc[keys[j]]) acc[keys[j]]={s:0,max:0,c:0,label:q.label,notes:{}};
+      acc[keys[j]].s+=q.s; acc[keys[j]].max+=q.max; acc[keys[j]].c++;
+      acc[keys[j]].notes[q.note]=(acc[keys[j]].notes[q.note]||0)+1;
+    }
+  }
+  var avg=Math.round(tot/n);
+  var last=scored[scored.length-1].tech;
+  avgEl.textContent='\u5747\u5206 '+avg+' \u00b7 '+n+' \u62cd\u8bc4\u5206';
+
+  var html='<div style="margin-top:6px"><span class="tscore">'+last.score+
+    '</span><small>\u6700\u65b0\u4e00\u62cd \u00b7 \u672c\u8f6e\u5747\u5206 '+avg+'</small></div>';
+
+  var worstK=null, worstR=2;
+  for(j=0;j<keys.length;j++){
+    var a=acc[keys[j]]; if(!a) continue;
+    var ratio=a.s/a.max;
+    if(ratio<worstR){ worstR=ratio; worstK=keys[j]; }
+    var pct=Math.round(ratio*100);
+    var lp=last.parts[keys[j]];
+    html+='<div class="tbar"><span class="tn">'+a.label+'</span>'+
+      '<span class="tmeter"><i class="'+(pct<60?'warn':'')+'" style="width:'+pct+'%"></i></span>'+
+      '<span class="tv">'+pct+'% \u00b7 '+(lp?lp.val:'--')+'</span></div>';
+  }
+
+  if(worstK && acc[worstK]){
+    // surface the note that recurred most often in the weakest area
+    var notes=acc[worstK].notes, top='', tc=0;
+    for(var nn in notes) if(notes[nn]>tc){ tc=notes[nn]; top=nn; }
+    html+='<div class="tnote"><b>\u6700\u5f31\u73af\u8282\uff1a'+acc[worstK].label+'</b> \u2014 '+top+
+      '<br><span style="color:var(--muted)">'+(FIX[worstK]||'')+'</span></div>';
+  }
+  body.innerHTML=html;
+}
+
+var FIX={
+  coil:'\u7ec3\u4e60\uff1a\u5f15\u62cd\u65f6\u628a\u975e\u6301\u62cd\u624b\u6307\u5411\u4fa7\u65b9\uff0c\u611f\u53d7\u80a9\u5148\u8f6c\u3001\u9acb\u540e\u8f6c\uff0c\u51fb\u7403\u65f6\u9acb\u5148\u5e26\u52a8\u8eab\u4f53\u3002',
+  prep:'\u7ec3\u4e60\uff1a\u7403\u8fc7\u7f51\u5c31\u5f00\u59cb\u8f6c\u4f53\uff0c\u4e0d\u8981\u7b49\u7403\u5230\u8eab\u524d\u624d\u62ac\u62cd\u3002',
+  contact:'\u7ec3\u4e60\uff1a\u628a\u51fb\u7403\u70b9\u60f3\u8c61\u5728\u524d\u811a\u5c16\u524d\u65b9\u4e00\u4e2a\u8eab\u4f4d\uff0c\u5411\u524d\u8fce\u7403\u800c\u4e0d\u662f\u7b49\u7403\u3002',
+  legs:'\u7ec3\u4e60\uff1a\u51fb\u7403\u524d\u5148\u5c48\u819d\u4e0b\u6c89\uff0c\u51fb\u7403\u65f6\u8e6c\u76f4\u5411\u4e0a\uff0c\u628a\u529b\u4ece\u5730\u9762\u4f20\u4e0a\u53bb\u3002',
+  finish:'\u7ec3\u4e60\uff1a\u51fb\u7403\u540e\u8ba9\u62cd\u5b50\u7ee7\u7eed\u8d70\u5230\u53e6\u4e00\u4fa7\u80a9\u4e0a\u65b9\uff0c\u4e0d\u8981\u505c\u62cd\u3002',
+  balance:'\u7ec3\u4e60\uff1a\u51fb\u7403\u77ac\u95f4\u773c\u775b\u76ef\u4f4f\u51fb\u7403\u70b9\uff0c\u5934\u4fdd\u6301\u4e0d\u52a8\u3002'
+};
+
 function drawLog(st){
   var tb=document.getElementById('logBody');
-  if(!st.length){ tb.innerHTML='<tr><td colspan="4">No strokes yet.</td></tr>'; return; }
+  if(!st.length){ tb.innerHTML='<tr><td colspan="5">No strokes yet.</td></tr>'; return; }
   var rows=st.slice(-8).reverse().map(function(s){
     var pl=placeOf(s);
     var p=pl? (Math.round(pl.x*100)+'% / '+Math.round(pl.y*100)+'%') : '—';
     var t=s.type==='F'?'forehand':(s.type==='B'?'backhand':'unclear');
-    return '<tr><td>'+s.n+'</td><td>'+t+'</td><td>'+s.v+'</td><td>'+p+'</td></tr>';
+    var sc=s.tech? s.tech.score : '\u2014';
+    return '<tr><td>'+s.n+'</td><td>'+t+'</td><td>'+s.v+'</td><td>'+sc+'</td><td>'+p+'</td></tr>';
   });
   tb.innerHTML=rows.join('');
 }
@@ -1072,6 +1377,7 @@ function loopRAF(){
   var t=performance.now()/1000;
   if(S.tPrev){ var dt=t-S.tPrev; S.fps=S.fps? S.fps*0.85+(1/dt)*0.15 : 1/dt; }
   S.tPrev=t;
+  S.clock=t;
   if(S.preview){ if(!S.pvT0) S.pvT0=t; previewStep(t); fpsEl.textContent='preview'; return; }
   step(t);
   fpsEl.textContent=Math.round(S.fps)+' fps'+(S.pxPerM?' · '+(S.pxPerM/PW*100).toFixed(0)+' px/m':'');
@@ -1081,6 +1387,7 @@ function loopVFC(){
   function cb(now,meta){
     if(!S.running) return;
     var t=meta.mediaTime;
+    S.clock=t;
     if(S.tPrev){ var dt=t-S.tPrev; if(dt>0) S.fps=S.fps? S.fps*0.85+(1/dt)*0.15 : 1/dt; }
     S.tPrev=t;
     step(t);
@@ -1463,7 +1770,13 @@ function sayStroke(st){
   if(S.voice==='off') return;
   var type = st.type==='F' ? (S.voice==='zh'?'\u6b63\u624b':'forehand')
            : st.type==='B' ? (S.voice==='zh'?'\u53cd\u624b':'backhand') : '';
-  say(st.v+' '+type);
+  var msg=st.v+' '+type;
+  if(st.tech && S.coach){
+    msg += S.voice==='zh' ? ('\uff0c'+st.tech.score+'\u5206') : (', '+st.tech.score+' points');
+    // only name the flaw when it actually costs something, or it becomes nagging
+    if(st.tech.weakest && st.tech.score<80 && S.voice==='zh') msg += '\uff0c'+st.tech.weakest.note;
+  }
+  say(msg);
 }
 function saySummary(){
   if(S.voice==='off'||!S.strokes.length) return;
@@ -1573,6 +1886,7 @@ function useFileSource(){
 
 function loadClip(c, analyze){
   stopTracking();
+  POSE_BUF.length=0; poseLast=null; poseT=-9;
   useFileSource();
   vid.src=c.url; vid.loop=false;
   vid.addEventListener('loadedmetadata', function once(){
@@ -1654,7 +1968,7 @@ function archiveSession(){
 
 function clearSession(){
   S.strokes=[]; S.pending=null; S.trail=[]; S.player=null; S.fig=null;
-  S.wallHits=[]; S.pbox=null; S.fstat={};
+  S.wallHits=[]; S.pbox=null; S.fstat={}; POSE_BUF.length=0;
   S.pxPerM=0; S.vxSign=0; S.lastEventT=-9; S.fps=0; S.frames=0; S.tPrev=0;
 }
 
@@ -1775,6 +2089,14 @@ document.getElementById('fileIn').addEventListener('change', function(e){
     hint.textContent=f.name+' loaded — press Start tracking.';
     overlay();
   });
+});
+
+var btnCoach=document.getElementById('btnCoach');
+btnCoach.addEventListener('click', function(){
+  S.coach=!S.coach;
+  btnCoach.setAttribute('aria-pressed', S.coach?'true':'false');
+  btnCoach.textContent='Coach: '+(S.coach?'on':'off');
+  saveCfg();
 });
 
 var btnVoice=document.getElementById('btnVoice');
@@ -1901,6 +2223,9 @@ draw.addEventListener('pointerdown', function(e){
 
 /* keep buttons reflecting restored config */
 (function syncUI(){
+  var bc=document.getElementById('btnCoach');
+  bc.textContent='Coach: '+(S.coach?'on':'off');
+  bc.setAttribute('aria-pressed', S.coach?'true':'false');
   var bv=document.getElementById('btnVoice');
   bv.textContent='Voice: '+(S.voice==='off'?'off':(S.voice==='zh'?'\u4e2d\u6587':'English'));
   bv.setAttribute('aria-pressed', S.voice==='off'?'false':'true');
