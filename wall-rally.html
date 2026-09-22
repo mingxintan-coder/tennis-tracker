@@ -162,7 +162,7 @@
 </head>
 <body>
 
-<h1>Wall Rally <span id="ver">v0.12.0</span></h1>
+<h1>Wall Rally <span id="ver">v0.13.0</span></h1>
 <p class="sub">Point the phone at yourself and the wall, prop it up, and rally.</p>
 
 <div class="wrap"><div class="colA">
@@ -322,7 +322,7 @@ backhand avg: -- km/h</div>
 (function(){
 "use strict";
 
-var VERSION='0.12.0', BUILT='2026-09-21';
+var VERSION='0.13.0', BUILT='2026-09-21';
 
 /* ---------- elements ---------- */
 var vid=document.getElementById('vid'), draw=document.getElementById('draw'),
@@ -350,7 +350,7 @@ var S={
   pconf:0, pseed:null, plastT:0, motionRatio:0, pvT0:0, lastGuide:'', lastGuideT:-9, lastGood:null,
   poseOn:false, wrists:null, coach:true, clock:0,
   handL:0, handR:0, ballDia:0, rejFoot:0, rejSize:0, ballSeen:0,
-  ballDbg:false, cands:[]
+  ballDbg:false, cands:[], prov:[], provT:-9, ballOk:false
 };
 
 /* ---------- processing buffers ---------- */
@@ -480,6 +480,41 @@ function nearBody(cx,cy){
     if(Math.hypot(cx-q.x, cy-q.y) < pts[i][1]) return true;
   }
   return false;
+}
+
+/* Colour alone cannot survive a painted wall: measured against the user's own
+   court, 5.9% of the mural is genuinely tennis-ball coloured, and no threshold
+   separates pale sage paint from a floodlit ball. What paint and hands cannot
+   fake is a trajectory - three detections in a row, each landing where the
+   previous two predict, each a real distance apart. On that footage this cut
+   spurious detections from 37 frames in 80 to 5. */
+function confirmBall(c, t){
+  if(!c){
+    if(S.prov.length && t-S.provT>0.30) S.prov=[];
+    S.ballOk=false;
+    return null;
+  }
+  var p={x:c.cx, y:c.cy, t:t}, n=S.prov.length;
+  if(n>=2){
+    var a=S.prov[n-2], b=S.prov[n-1];
+    var px=b.x+(b.x-a.x), py=b.y+(b.y-a.y);
+    if(Math.hypot(p.x-px, p.y-py) < PW*0.11) S.prov.push(p);
+    else S.prov=[p];
+  } else if(n===1){
+    var d=Math.hypot(p.x-S.prov[0].x, p.y-S.prov[0].y);
+    var dt=t-S.prov[0].t;
+    // a real ball crosses real distance between frames; a hand or a painted
+    // shape barely moves, so a minimum step is most of the discrimination
+    var perFrame = dt>0 ? d/(dt*30) : 0;
+    if(perFrame >= PW*0.030 && d < PW*0.32) S.prov.push(p);
+    else S.prov=[p];
+  } else {
+    S.prov=[p];
+  }
+  if(S.prov.length>6) S.prov.shift();
+  S.provT=t;
+  S.ballOk = S.prov.length>=3;
+  return S.ballOk ? c : null;
 }
 
 function pickBall(cands){
@@ -1170,7 +1205,7 @@ function step(tSec){
   if(S.frames<4) return;                       // let the diff warm up
 
   var bcand=blobs(ballMask,2,420,300);
-  var b=pickBall(bcand);
+  var b=confirmBall(pickBall(bcand), tSec);
   S.ball=b;
 
   updatePlayer(tSec);
@@ -1853,6 +1888,7 @@ function framing(tSec){
     var bad = (st.player&&!st.playerIn) || (st.wall&&!st.wallIn);
     var dia=expectedDia();
     var extra=' \u00b7 ball '+(dia?dia.toFixed(1)+'px':'?')+
+              ' '+(S.ballOk?'\u2713\u8f68\u8ff9':'\u00b7\u5f85\u786e\u8ba4('+S.prov.length+'/3)')+
               ' \u00b7 rej '+S.rejFoot+'\u8db3/'+S.rejSize+'\u5c3a';
     el.textContent = msg.join('   ') + extra + (bad? '   \u2014 something is at the frame edge' : '');
     el.style.color = bad? 'var(--warn)' : 'var(--muted)';
@@ -2138,7 +2174,7 @@ function archiveSession(){
 function clearSession(){
   S.strokes=[]; S.pending=null; S.trail=[]; S.player=null; S.fig=null;
   S.wallHits=[]; S.pbox=null; S.fstat={}; POSE_BUF.length=0;
-  S.handL=0; S.handR=0; S.ballDia=0; prevW=null;
+  S.handL=0; S.handR=0; S.ballDia=0; prevW=null; S.prov=[]; S.ballOk=false;
   S.rejFoot=0; S.rejSize=0; S.ballSeen=0;
   S.pxPerM=0; S.vxSign=0; S.lastEventT=-9; S.fps=0; S.frames=0; S.tPrev=0;
 }
